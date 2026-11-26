@@ -7,11 +7,9 @@ from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.config import get_settings
-from app.storage import DocumentNotFoundError, DocumentStorage, StorageError
+from app.storage import DocumentNotFoundError, StorageError, storage
 
-router = APIRouter(tags=["documents"])
-
-storage = DocumentStorage()
+router = APIRouter(tags=["documents"], redirect_slashes=False)
 
 # --- Allowed upload constraints ---
 ALLOWED_EXTENSION = ".pdf"

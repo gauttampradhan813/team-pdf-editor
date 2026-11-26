@@ -6,11 +6,9 @@ from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import Response
 
 from app.config import get_settings
-from app.storage import DocumentNotFoundError, DocumentStorage
+from app.storage import DocumentNotFoundError, storage
 
-router = APIRouter(tags=["pages"])
-
-storage = DocumentStorage()
+router = APIRouter(tags=["pages"], redirect_slashes=False)
 
 
 @router.get(

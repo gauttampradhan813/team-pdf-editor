@@ -8,13 +8,16 @@ under an LRU-like cap.
 Thread-safe: every mutating operation takes a per-process lock. Because
 the application is single-process (uvicorn without workers), this is
 sufficient to prevent concurrent races.
+
+A single module-level ``storage`` instance is shared by all routers so
+that upload, metadata, download, delete, and render operations all see
+the same document state and cache invalidation.
 """
 
 from __future__ import annotations
 
 import io
 import json
-import os
 import shutil
 import threading
 import time
@@ -92,8 +95,12 @@ class DocumentStorage:
         )
 
     def _validate_document_id(self, document_id: str) -> None:
-        """Reject ids that could escape the storage directory."""
-        if not document_id or document_id in (".", "..") or "/" in document_id or "\\" in document_id:
+        """Reject ids that could escape the storage directory or are empty."""
+        if not document_id or document_id.strip() == "":
+            raise DocumentNotFoundError(f"Invalid document id: {document_id!r}")
+        if document_id in (".", ".."):
+            raise DocumentNotFoundError(f"Invalid document id: {document_id!r}")
+        if "/" in document_id or "\\" in document_id:
             raise DocumentNotFoundError(f"Invalid document id: {document_id!r}")
 
     # ------------------------------------------------------------------
@@ -135,13 +142,17 @@ class DocumentStorage:
                 self._documents[document_id] = record
             except Exception as exc:
                 # Best-effort rollback on failure.
-                shutil.rmtree(doc_dir, ignore_errors=True)
+                self._remove_directory(doc_dir)
                 raise StorageError(f"Failed to store document: {exc}") from exc
 
         return record
 
     def get(self, document_id: str) -> DocumentRecord:
-        """Return the record for ``document_id`` and touch its access time."""
+        """Return the record for ``document_id`` and touch its access time.
+
+        Raises :class:`DocumentNotFoundError` if the document does not
+        exist in memory or on disk.
+        """
         with self._lock:
             self._validate_document_id(document_id)
             record = self._documents.get(document_id)
@@ -153,7 +164,7 @@ class DocumentStorage:
                         data = json.loads(metadata_path.read_text(encoding="utf-8"))
                         record = DocumentRecord(**data)
                         self._documents[document_id] = record
-                    except (json.JSONDecodeError, TypeError):
+                    except (json.JSONDecodeError, TypeError, OSError):
                         record = None
                 if record is None:
                     raise DocumentNotFoundError(f"Document not found: {document_id}")
@@ -180,6 +191,11 @@ class DocumentStorage:
 
         Renders on first request and caches to disk. Cache key includes
         page number and scale so different renders coexist.
+
+        The document is validated before rendering. If the document is
+        deleted while rendering is in progress, the freshly rendered PNG
+        is still returned to the caller but is not cached, so subsequent
+        requests correctly 404.
         """
         record = self.get(document_id)
         if page_number < 1 or page_number > record.page_count:
@@ -188,13 +204,14 @@ class DocumentStorage:
             )
 
         cache_key = f"{document_id}:{page_number}:{scale:g}"
+        cache_path = self._page_cache_path(document_id, page_number, scale)
+
         with self._lock:
             cached = self._page_cache.get(cache_key)
             if cached is not None:
                 record.touch()
                 return cached
 
-            cache_path = self._page_cache_path(document_id, page_number, scale)
             if cache_path.exists():
                 cached = cache_path.read_bytes()
                 self._page_cache[cache_key] = cached
@@ -202,10 +219,16 @@ class DocumentStorage:
                 record.touch()
                 return cached
 
-        # Render outside the lock (PyMuPDF is CPU-bound; releases GIL partially).
+        # Render outside the lock (PyMuPDF is CPU-bound).
         png_bytes = self._render_page(document_id, page_number, scale)
 
+        # Re-acquire the lock to store the result, but only if the
+        # document still exists (it may have been deleted mid-render).
         with self._lock:
+            if document_id not in self._documents:
+                # Document was deleted during rendering — do not cache.
+                return png_bytes
+
             self._page_cache[cache_key] = png_bytes
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -232,30 +255,56 @@ class DocumentStorage:
         """Drop oldest in-memory cache entries when over the cap."""
         if len(self._page_cache) <= self.page_cache_max:
             return
-        # Sort by insertion order (dict preserves it) and drop the oldest.
         excess = len(self._page_cache) - self.page_cache_max
         for key in list(self._page_cache)[:excess]:
             del self._page_cache[key]
 
+    def _remove_directory(self, path: Path) -> None:
+        """Remove a directory tree, raising on failure.
+
+        On Windows, file handles may be briefly held by antivirus or
+        indexers. One retry after a short delay is attempted before
+        reporting the failure.
+        """
+        if not path.exists():
+            return
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            time.sleep(0.2)
+            try:
+                shutil.rmtree(path)
+            except OSError as exc:
+                raise StorageError(
+                    f"Failed to delete document directory {path}: {exc}"
+                ) from exc
+
     def delete(self, document_id: str) -> None:
-        """Remove a document and all its cached pages from disk and memory."""
+        """Remove a document and all its cached pages from disk and memory.
+
+        Raises :class:`DocumentNotFoundError` if the document does not
+        exist. Raises :class:`StorageError` if the filesystem deletion
+        cannot be completed (never silently ignored).
+        """
         with self._lock:
             self._validate_document_id(document_id)
             record = self._documents.pop(document_id, None)
             doc_dir = self._document_dir(document_id)
 
-        if record is None:
-            # Hydrate check: maybe it exists only on disk.
-            if not doc_dir.exists():
-                raise DocumentNotFoundError(f"Document not found: {document_id}")
-        else:
-            # Drop in-memory page cache entries for this document.
-            with self._lock:
-                for key in list(self._page_cache):
-                    if key.startswith(f"{document_id}:"):
-                        del self._page_cache[key]
+            # Remove all in-memory cache entries for this document.
+            keys_to_delete = [
+                key for key in self._page_cache if key.startswith(f"{document_id}:")
+            ]
+            for key in keys_to_delete:
+                del self._page_cache[key]
 
-        shutil.rmtree(doc_dir, ignore_errors=True)
+            if record is None and not doc_dir.exists():
+                raise DocumentNotFoundError(f"Document not found: {document_id}")
+
+        # Delete the directory outside the lock (filesystem operation).
+        # Any rendering that was in progress already has its bytes in memory;
+        # the cache write will find the document no longer in memory and skip.
+        self._remove_directory(doc_dir)
 
     def cleanup_expired(self) -> int:
         """Remove documents whose age exceeds TTL.
@@ -276,14 +325,22 @@ class DocumentStorage:
                 if age > self.ttl_seconds or idle > self.ttl_seconds:
                     expired.append(document_id)
 
+        deleted_count = 0
         for document_id in expired:
             try:
                 self.delete(document_id)
+                deleted_count += 1
             except DocumentNotFoundError:
                 pass
 
-        return len(expired)
+        return deleted_count
 
     def list_documents(self) -> list[DocumentRecord]:
         with self._lock:
             return sorted(self._documents.values(), key=lambda r: r.created_at, reverse=True)
+
+
+# ------------------------------------------------------------------
+# Shared singleton instance used by all API routers.
+# ------------------------------------------------------------------
+storage = DocumentStorage()
