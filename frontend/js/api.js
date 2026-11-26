@@ -198,6 +198,35 @@ const API = (() => {
     return response;
   }
 
+  /**
+   * Extract selected pages into a new document.
+   * @param {string} documentId
+   * @param {number[]} pageNumbers - Zero-based page indices.
+   * @returns {Promise<{document_id, filename, page_count, message}>}
+   */
+  async function extractPages(documentId, pageNumbers) {
+    const response = await _request("POST", `/documents/${encodeURIComponent(documentId)}/pages/extract`, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ page_numbers: pageNumbers }),
+    });
+    return response;
+  }
+
+  /**
+   * Duplicate selected pages within the same document.
+   * @param {string} documentId
+   * @param {number[]} pageNumbers - Zero-based page indices.
+   * @param {string} position - Insertion position (default: "after").
+   * @returns {Promise<{document_id, page_count, message}>}
+   */
+  async function duplicatePages(documentId, pageNumbers, position = "after") {
+    const response = await _request("POST", `/documents/${encodeURIComponent(documentId)}/pages/duplicate`, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ page_numbers: pageNumbers, position }),
+    });
+    return response;
+  }
+
   return {
     uploadPDF,
     getDocument,
@@ -207,5 +236,7 @@ const API = (() => {
     rotatePages,
     deletePages,
     reorderPages,
+    extractPages,
+    duplicatePages,
   };
 })();

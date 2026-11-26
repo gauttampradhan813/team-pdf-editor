@@ -600,6 +600,183 @@ class DocumentStorage:
         if cache_dir.exists():
             shutil.rmtree(cache_dir, ignore_errors=True)
 
+    # ------------------------------------------------------------------
+    # Page extraction and duplication
+    # ------------------------------------------------------------------
+
+    def extract_pages(
+        self,
+        document_id: str,
+        page_numbers: list[int],
+    ) -> DocumentRecord:
+        """Extract selected pages into a new document.
+
+        Args:
+            document_id: Source document.
+            page_numbers: Zero-based page indices to extract, in desired order.
+
+        Returns:
+            A new :class:`DocumentRecord` for the extracted document.
+
+        Raises:
+            DocumentNotFoundError: Source document not found.
+            ValueError: Empty selection or invalid page indices.
+            StorageError: Filesystem operation failed.
+        """
+        with self._lock:
+            self._validate_document_id(document_id)
+            record = self._documents.get(document_id)
+            if record is None:
+                raise DocumentNotFoundError(f"Document not found: {document_id}")
+
+            page_count = record.page_count
+
+            if not page_numbers:
+                raise ValueError("No pages selected for extraction.")
+
+            unique = set(page_numbers)
+            for idx in unique:
+                if idx < 0 or idx >= page_count:
+                    raise ValueError(
+                        f"Page index {idx} out of range (0-{page_count - 1})"
+                    )
+
+            src_path = self._pdf_path(document_id)
+            if not src_path.exists():
+                raise DocumentNotFoundError(f"Document file missing: {document_id}")
+
+        # Build the extracted PDF outside the lock (CPU-bound).
+        try:
+            extracted_bytes = self._extract_pages_file(src_path, page_numbers)
+        except Exception as exc:
+            raise StorageError(f"Failed to extract pages: {exc}") from exc
+
+        # Derive a new filename.
+        source_name = record.filename or "document.pdf"
+        base = source_name[:-4] if source_name.lower().endswith(".pdf") else source_name
+        extracted_filename = f"{base}_extracted.pdf"
+
+        # Store as a brand-new document (new ID). Lock only for registration.
+        with self._lock:
+            try:
+                new_record = self.store(
+                    filename=extracted_filename,
+                    data=extracted_bytes,
+                    page_count=len(page_numbers),
+                    metadata=dict(record.metadata),
+                )
+            except StorageError:
+                raise
+
+        return new_record
+
+    def duplicate_pages(
+        self,
+        document_id: str,
+        page_numbers: list[int],
+        position: str = "after",
+    ) -> DocumentRecord:
+        """Duplicate selected pages within the same document.
+
+        Args:
+            document_id: Target document.
+            page_numbers: Zero-based page indices to duplicate.
+            position: Insertion position — ``"after"`` inserts each duplicate
+                immediately after its original page.
+
+        Returns:
+            Updated :class:`DocumentRecord`.
+
+        Raises:
+            DocumentNotFoundError: Document not found.
+            ValueError: Empty selection, invalid indices, or unsupported position.
+            StorageError: Filesystem operation failed.
+        """
+        if position not in ("after",):
+            raise ValueError(f"Unsupported position: {position!r}")
+
+        with self._lock:
+            self._validate_document_id(document_id)
+            record = self._documents.get(document_id)
+            if record is None:
+                raise DocumentNotFoundError(f"Document not found: {document_id}")
+
+            page_count = record.page_count
+
+            if not page_numbers:
+                raise ValueError("No pages selected for duplication.")
+
+            unique = set(page_numbers)
+            for idx in unique:
+                if idx < 0 or idx >= page_count:
+                    raise ValueError(
+                        f"Page index {idx} out of range (0-{page_count - 1})"
+                    )
+
+            # Build new page order: originals first, then duplicates appended
+            # immediately after each original page (preserving selection order).
+            # We construct an ordered list of (original_index, is_duplicate).
+            selected_set = set(page_numbers)
+            # Sort selection so duplicates appear in selection order after their
+            # originals; for "after", we place each duplicate right after its
+            # source page.
+            order: list[int] = []
+            inserted_duplicates: set[int] = set()
+            for i in range(page_count):
+                order.append(i)
+                if i in selected_set and i not in inserted_duplicates:
+                    order.append(i)  # duplicate right after original
+                    inserted_duplicates.add(i)
+
+            doc_dir = self._document_dir(document_id)
+            src_path = self._pdf_path(document_id)
+            tmp_path = doc_dir / "document.tmp.pdf"
+
+            try:
+                self._reorder_pages_file(src_path, tmp_path, order)
+            except Exception as exc:
+                tmp_path.unlink(missing_ok=True)
+                raise StorageError(f"Failed to duplicate pages: {exc}") from exc
+
+            tmp_path.replace(src_path)
+
+            new_page_count = page_count + len(unique)
+            new_metadata = dict(record.metadata)
+            new_metadata["duplicated_pages"] = sorted(unique)
+            record.page_count = new_page_count
+            record.metadata = new_metadata
+            record.touch()
+            self._metadata_path(document_id).write_text(
+                json.dumps(record.to_dict(), indent=2), encoding="utf-8"
+            )
+
+            # Invalidate all page render caches for this document.
+            self._invalidate_document_cache(document_id)
+
+        return record
+
+    # ------------------------------------------------------------------
+    # Low-level PDF extraction helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_pages_file(
+        src_path: Path,
+        page_numbers: list[int],
+    ) -> bytes:
+        """Extract pages from ``src_path`` and return the new PDF bytes."""
+        import pikepdf
+        import io
+
+        with pikepdf.open(src_path) as pdf:
+            pages = list(pdf.pages)
+            with pikepdf.new() as out_pdf:
+                for idx in page_numbers:
+                    out_pdf.pages.append(pages[idx])
+                buf = io.BytesIO()
+                out_pdf.save(buf)
+                return buf.getvalue()
+
 
 # ------------------------------------------------------------------
 # Shared singleton instance used by all API routers.

@@ -33,6 +33,21 @@ class ReorderRequest(BaseModel):
     )
 
 
+class ExtractRequest(BaseModel):
+    page_numbers: list[int] = Field(
+        ..., description="Zero-based page indices to extract, in desired order."
+    )
+
+
+class DuplicateRequest(BaseModel):
+    page_numbers: list[int] = Field(
+        ..., description="Zero-based page indices to duplicate."
+    )
+    position: str = Field(
+        "after", description="Insertion position for duplicates (default: 'after')."
+    )
+
+
 @router.post(
     "/documents/{document_id}/pages/rotate",
     summary="Rotate pages",
@@ -133,5 +148,77 @@ async def reorder_pages(document_id: str, payload: ReorderRequest) -> JSONRespon
             "document_id": record.document_id,
             "page_count": record.page_count,
             "message": "Pages reordered.",
+        }
+    )
+
+
+@router.post(
+    "/documents/{document_id}/pages/extract",
+    summary="Extract pages into a new document",
+    status_code=status.HTTP_201_CREATED,
+)
+async def extract_pages(document_id: str, payload: ExtractRequest) -> JSONResponse:
+    """Extract selected pages into a new document with a new document ID."""
+    try:
+        new_record = storage.extract_pages(document_id, payload.page_numbers)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+    except StorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        )
+
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content={
+            "document_id": new_record.document_id,
+            "filename": new_record.filename,
+            "page_count": new_record.page_count,
+            "message": f"Extracted {len(payload.page_numbers)} page(s).",
+        },
+    )
+
+
+@router.post(
+    "/documents/{document_id}/pages/duplicate",
+    summary="Duplicate selected pages within the document",
+    status_code=status.HTTP_200_OK,
+)
+async def duplicate_pages(document_id: str, payload: DuplicateRequest) -> JSONResponse:
+    """Duplicate selected pages within the same document."""
+    try:
+        record = storage.duplicate_pages(
+            document_id, payload.page_numbers, payload.position
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+    except StorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        )
+
+    return JSONResponse(
+        content={
+            "document_id": record.document_id,
+            "page_count": record.page_count,
+            "message": f"Duplicated {len(payload.page_numbers)} page(s).",
         }
     )

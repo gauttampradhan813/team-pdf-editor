@@ -714,6 +714,81 @@ body {
 .confirm-delete:hover {
   background-color: #b71c1c;
 }
+
+/* ------------------------------------------------------------------
+   Success toast
+   ------------------------------------------------------------------ */
+.success-toast {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: var(--accent-success);
+  color: #ffffff;
+  padding: 12px 20px;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-medium);
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  max-width: 90vw;
+}
+
+.success-toast-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.success-toast-message {
+  flex: 1;
+}
+
+.success-toast-close {
+  background: none;
+  border: none;
+  color: #ffffff;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.success-toast-close:hover {
+  opacity: 0.8;
+}
+
+/* ------------------------------------------------------------------
+   Extract/duplicate dialog extras
+   ------------------------------------------------------------------ */
+.extract-hint {
+  margin: 12px 0 4px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.confirm-dialog input[type="text"] {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  font-size: 13px;
+  margin: 8px 0;
+  font-family: inherit;
+}
+
+.confirm-dialog input[type="text"]:focus {
+  outline: none;
+  border-color: var(--brand-primary);
+}
+
+/* ------------------------------------------------------------------
+   Utility
+   ------------------------------------------------------------------ */
+.visually-hidden {
   position: absolute;
   width: 1px;
   height: 1px;

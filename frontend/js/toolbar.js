@@ -65,6 +65,16 @@ const Toolbar = (() => {
       if (callbacks.onDeleteSelected) callbacks.onDeleteSelected();
     });
 
+    // Extract selected
+    elements.btnExtractPage.addEventListener("click", () => {
+      if (callbacks.onExtractSelected) callbacks.onExtractSelected();
+    });
+
+    // Duplicate selected
+    elements.btnDuplicatePage.addEventListener("click", () => {
+      if (callbacks.onDuplicateSelected) callbacks.onDuplicateSelected();
+    });
+
     // Toggle thumbnails
     elements.btnToggleThumbnails.addEventListener("click", () => {
       if (callbacks.onToggleThumbnails) callbacks.onToggleThumbnails();
@@ -118,6 +128,12 @@ const Toolbar = (() => {
     if (elements.btnDeletePage) {
       elements.btnDeletePage.disabled = count === 0;
     }
+    if (elements.btnExtractPage) {
+      elements.btnExtractPage.disabled = count === 0;
+    }
+    if (elements.btnDuplicatePage) {
+      elements.btnDuplicatePage.disabled = count === 0;
+    }
   }
 
   function setLoading(loading) {
@@ -127,6 +143,8 @@ const Toolbar = (() => {
     if (elements.btnZoomOut) elements.btnZoomOut.disabled = loading;
     if (elements.btnRotate) elements.btnRotate.disabled = loading;
     if (elements.btnDeletePage) elements.btnDeletePage.disabled = loading;
+    if (elements.btnExtractPage) elements.btnExtractPage.disabled = loading;
+    if (elements.btnDuplicatePage) elements.btnDuplicatePage.disabled = loading;
   }
 
   return {

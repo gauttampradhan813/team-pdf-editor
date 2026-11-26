@@ -248,3 +248,211 @@ def test_metadata_updated_after_operation():
     meta = client.get(f"/documents/{doc_id}")
     assert meta.status_code == 200
     assert meta.json()["page_count"] == 2
+
+
+# -----------------------------------------------------------------------
+# Extract
+# -----------------------------------------------------------------------
+
+def test_extract_single_page():
+    doc_id = upload_pdf(3)
+    response = client.post(
+        f"/documents/{doc_id}/pages/extract",
+        json={"page_numbers": [1]},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert "document_id" in body
+    assert body["page_count"] == 1
+    assert body["document_id"] != doc_id  # new document
+
+    # Verify extracted content.
+    texts = get_page_order_text(body["document_id"])
+    assert texts == ["Test Doc - page 2"]
+
+    # Source unchanged.
+    source_texts = get_page_order_text(doc_id)
+    assert source_texts == ["Test Doc - page 1", "Test Doc - page 2", "Test Doc - page 3"]
+
+
+def test_extract_multiple_pages():
+    doc_id = upload_pdf(5)
+    response = client.post(
+        f"/documents/{doc_id}/pages/extract",
+        json={"page_numbers": [0, 2, 4]},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["page_count"] == 3
+
+    texts = get_page_order_text(body["document_id"])
+    assert texts == ["Test Doc - page 1", "Test Doc - page 3", "Test Doc - page 5"]
+
+
+def test_extract_non_consecutive_pages():
+    doc_id = upload_pdf(4)
+    response = client.post(
+        f"/documents/{doc_id}/pages/extract",
+        json={"page_numbers": [3, 0]},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["page_count"] == 2
+
+    # Preserve requested order: page 4 first, then page 1.
+    texts = get_page_order_text(body["document_id"])
+    assert texts == ["Test Doc - page 4", "Test Doc - page 1"]
+
+
+def test_extract_empty_selection_rejected():
+    doc_id = upload_pdf(3)
+    response = client.post(
+        f"/documents/{doc_id}/pages/extract",
+        json={"page_numbers": []},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_extract_invalid_page_index():
+    doc_id = upload_pdf(3)
+    response = client.post(
+        f"/documents/{doc_id}/pages/extract",
+        json={"page_numbers": [5]},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_extract_source_unchanged():
+    doc_id = upload_pdf(3)
+    client.post(
+        f"/documents/{doc_id}/pages/extract",
+        json={"page_numbers": [0]},
+    )
+    meta = client.get(f"/documents/{doc_id}")
+    assert meta.status_code == 200
+    assert meta.json()["page_count"] == 3
+
+
+def test_extract_download_integrity():
+    doc_id = upload_pdf(2)
+    response = client.post(
+        f"/documents/{doc_id}/pages/extract",
+        json={"page_numbers": [0, 1]},
+    )
+    new_id = response.json()["document_id"]
+    data = client.get(f"/documents/{new_id}/download")
+    assert data.status_code == 200
+    assert data.content.startswith(b"%PDF-")
+
+    # Verify content matches source pages.
+    import pymupdf
+    extracted = pymupdf.open(stream=data.content, filetype="pdf")
+    source = pymupdf.open(stream=make_pdf(2), filetype="pdf")
+    try:
+        assert extracted[0].get_text().strip() == source[0].get_text().strip()
+        assert extracted[1].get_text().strip() == source[1].get_text().strip()
+    finally:
+        extracted.close()
+        source.close()
+
+
+# -----------------------------------------------------------------------
+# Duplicate
+# -----------------------------------------------------------------------
+
+def test_duplicate_single_page():
+    doc_id = upload_pdf(3)
+    response = client.post(
+        f"/documents/{doc_id}/pages/duplicate",
+        json={"page_numbers": [1], "position": "after"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["page_count"] == 4
+
+    texts = get_page_order_text(doc_id)
+    assert texts == [
+        "Test Doc - page 1",
+        "Test Doc - page 2",
+        "Test Doc - page 2",  # duplicate
+        "Test Doc - page 3",
+    ]
+
+
+def test_duplicate_multiple_pages():
+    doc_id = upload_pdf(4)
+    response = client.post(
+        f"/documents/{doc_id}/pages/duplicate",
+        json={"page_numbers": [0, 2], "position": "after"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["page_count"] == 6
+
+    texts = get_page_order_text(doc_id)
+    assert texts == [
+        "Test Doc - page 1",
+        "Test Doc - page 1",  # duplicate
+        "Test Doc - page 2",
+        "Test Doc - page 3",
+        "Test Doc - page 3",  # duplicate
+        "Test Doc - page 4",
+    ]
+
+
+def test_duplicate_preserves_order():
+    doc_id = upload_pdf(5)
+    response = client.post(
+        f"/documents/{doc_id}/pages/duplicate",
+        json={"page_numbers": [4, 0], "position": "after"},
+    )
+    assert response.status_code == 200, response.text
+
+    texts = get_page_order_text(doc_id)
+    assert texts == [
+        "Test Doc - page 1",
+        "Test Doc - page 1",  # duplicate of page 1
+        "Test Doc - page 2",
+        "Test Doc - page 3",
+        "Test Doc - page 4",
+        "Test Doc - page 5",
+        "Test Doc - page 5",  # duplicate of page 5
+    ]
+
+
+def test_duplicate_invalid_page_index():
+    doc_id = upload_pdf(3)
+    response = client.post(
+        f"/documents/{doc_id}/pages/duplicate",
+        json={"page_numbers": [10], "position": "after"},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_duplicate_empty_selection_rejected():
+    doc_id = upload_pdf(3)
+    response = client.post(
+        f"/documents/{doc_id}/pages/duplicate",
+        json={"page_numbers": [], "position": "after"},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_duplicate_invalid_position():
+    doc_id = upload_pdf(3)
+    response = client.post(
+        f"/documents/{doc_id}/pages/duplicate",
+        json={"page_numbers": [0], "position": "before"},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_duplicate_metadata_updated():
+    doc_id = upload_pdf(3)
+    client.post(
+        f"/documents/{doc_id}/pages/duplicate",
+        json={"page_numbers": [0], "position": "after"},
+    )
+    meta = client.get(f"/documents/{doc_id}")
+    assert meta.status_code == 200
+    assert meta.json()["page_count"] == 4

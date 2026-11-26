@@ -31,6 +31,21 @@ const App = (() => {
     confirmCancel: document.getElementById("confirm-cancel"),
     confirmDelete: document.getElementById("confirm-delete"),
     confirmMessage: document.getElementById("confirm-message"),
+    // Extract dialog refs
+    extractDialog: document.getElementById("extract-dialog"),
+    extractCancel: document.getElementById("extract-cancel"),
+    extractOk: document.getElementById("extract-ok"),
+    extractRanges: document.getElementById("extract-ranges"),
+    extractSelectedCount: document.getElementById("extract-selected-count"),
+    // Duplicate dialog refs
+    duplicateDialog: document.getElementById("duplicate-dialog"),
+    duplicateCancel: document.getElementById("duplicate-cancel"),
+    duplicateOk: document.getElementById("duplicate-ok"),
+    duplicateCount: document.getElementById("duplicate-count"),
+    // Success toast refs
+    successToast: document.getElementById("success-toast"),
+    successToastMessage: document.getElementById("success-toast-message"),
+    successToastClose: document.getElementById("success-toast-close"),
     // Toolbar refs
     btnPrev: document.getElementById("btn-prev"),
     btnNext: document.getElementById("btn-next"),
@@ -55,6 +70,7 @@ const App = (() => {
     isLoading: false,
     sidebarVisible: true,
     pendingDeletePages: null, // zero-based indices awaiting confirmation
+    extractedDocuments: [], // [{ document_id, filename, page_count }]
   };
 
   // ------------------------------------------------------------------
@@ -103,6 +119,8 @@ const App = (() => {
         btnActualSize: els.btnActualSize,
         btnRotate: els.btnRotate,
         btnDeletePage: els.btnDeletePage,
+        btnExtractPage: els.btnExtractPage,
+        btnDuplicatePage: els.btnDuplicatePage,
         btnToggleThumbnails: els.btnToggleThumbnails,
       },
       {
@@ -116,6 +134,8 @@ const App = (() => {
         onActualSize: () => _actualSize(),
         onRotateSelected: () => _rotateSelected(),
         onDeleteSelected: () => _confirmDelete(),
+        onExtractSelected: () => _confirmExtract(),
+        onDuplicateSelected: () => _confirmDuplicate(),
         onToggleThumbnails: _toggleSidebar,
       }
     );
@@ -123,6 +143,17 @@ const App = (() => {
     // Confirm dialog events
     els.confirmCancel.addEventListener("click", _hideConfirm);
     els.confirmDelete.addEventListener("click", _executeDelete);
+
+    // Extract dialog events
+    els.extractCancel.addEventListener("click", _hideExtract);
+    els.extractOk.addEventListener("click", _executeExtract);
+
+    // Duplicate dialog events
+    els.duplicateCancel.addEventListener("click", _hideDuplicate);
+    els.duplicateOk.addEventListener("click", _executeDuplicate);
+
+    // Success toast close
+    els.successToastClose.addEventListener("click", _hideSuccess);
   }
 
   // ------------------------------------------------------------------
@@ -448,6 +479,151 @@ const App = (() => {
   }
 
   // ------------------------------------------------------------------
+  // Page operations (extract / duplicate)
+  // ------------------------------------------------------------------
+
+  async function _confirmExtract() {
+    const selected = Viewer.getSelectedZeroBased();
+    if (!selected.length) return;
+
+    // Show extract dialog with selected count pre-filled
+    els.extractSelectedCount.textContent = selected.length;
+    els.extractRanges.value = "";
+    els.extractDialog.style.display = "flex";
+  }
+
+  function _hideExtract() {
+    els.extractDialog.style.display = "none";
+    els.extractRanges.value = "";
+  }
+
+  async function _executeExtract() {
+    const rangesText = els.extractRanges.value.trim();
+    let pageNumbers;
+
+    if (rangesText) {
+      // Parse custom ranges like "1-3, 5, 7-9" (1-based input, convert to 0-based)
+      pageNumbers = _parsePageRanges(rangesText, state.pageCount);
+      if (pageNumbers === null) {
+        _showError("Invalid page range format. Use e.g. 1-3, 5, 7-9");
+        return;
+      }
+    } else {
+      // Use currently selected pages
+      pageNumbers = Viewer.getSelectedZeroBased();
+      if (!pageNumbers.length) {
+        _hideExtract();
+        return;
+      }
+    }
+
+    _hideExtract();
+    _setLoading(true);
+    _hideError();
+
+    try {
+      const result = await API.extractPages(state.documentId, pageNumbers);
+      state.extractedDocuments.push({
+        document_id: result.document_id,
+        filename: result.filename,
+        page_count: result.page_count,
+      });
+      _showSuccess(`Extracted ${result.page_count} page(s) to "${result.filename}".`);
+      Viewer.clearPageSelection();
+      Thumbnails.clearSelection();
+      Toolbar.setSelectionCount(0);
+    } catch (err) {
+      _showError(err.message || "Failed to extract pages");
+    } finally {
+      _setLoading(false);
+    }
+  }
+
+  async function _confirmDuplicate() {
+    const selected = Viewer.getSelectedZeroBased();
+    if (!selected.length) return;
+
+    els.duplicateCount.textContent = selected.length;
+    els.duplicateDialog.style.display = "flex";
+  }
+
+  function _hideDuplicate() {
+    els.duplicateDialog.style.display = "none";
+  }
+
+  async function _executeDuplicate() {
+    const pages = Viewer.getSelectedZeroBased();
+    if (!pages.length) {
+      _hideDuplicate();
+      return;
+    }
+
+    _hideDuplicate();
+    _setLoading(true);
+    _hideError();
+
+    try {
+      const result = await API.duplicatePages(state.documentId, pages, "after");
+      _applyDocumentUpdate(result);
+      Viewer.clearPageSelection();
+      Thumbnails.clearSelection();
+      Toolbar.setSelectionCount(0);
+      _showSuccess(`Duplicated ${pages.length} page(s).`);
+    } catch (err) {
+      _showError(err.message || "Failed to duplicate pages");
+    } finally {
+      _setLoading(false);
+    }
+  }
+
+  /**
+   * Parse a page range string like "1-3, 5, 7-9" (1-based) into
+   * zero-based page indices. Validates bounds against pageCount.
+   * Returns null on invalid input.
+   */
+  function _parsePageRanges(text, pageCount) {
+    const result = [];
+    const parts = text.split(",");
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      const range = trimmed.split("-");
+      if (range.length === 1) {
+        const n = parseInt(range[0].trim(), 10);
+        if (isNaN(n) || n < 1 || n > pageCount) return null;
+        result.push(n - 1);
+      } else if (range.length === 2) {
+        const start = parseInt(range[0].trim(), 10);
+        const end = parseInt(range[1].trim(), 10);
+        if (
+          isNaN(start) ||
+          isNaN(end) ||
+          start < 1 ||
+          end > pageCount ||
+          start > end
+        ) {
+          return null;
+        }
+        for (let i = start; i <= end; i++) {
+          result.push(i - 1);
+        }
+      } else {
+        return null;
+      }
+    }
+    // Remove duplicates while preserving order
+    const seen = new Set();
+    const unique = [];
+    for (const n of result) {
+      if (!seen.has(n)) {
+        seen.add(n);
+        unique.push(n);
+      }
+    }
+    return unique;
+  }
+
+  // ------------------------------------------------------------------
   // UI helpers
   // ------------------------------------------------------------------
 
@@ -489,6 +665,16 @@ const App = (() => {
 
   function _hideError() {
     els.errorToast.style.display = "none";
+  }
+
+  function _showSuccess(message) {
+    els.successToastMessage.textContent = message;
+    els.successToast.style.display = "flex";
+    setTimeout(() => _hideSuccess(), 5000);
+  }
+
+  function _hideSuccess() {
+    els.successToast.style.display = "none";
   }
 
   function _toggleSidebar() {
