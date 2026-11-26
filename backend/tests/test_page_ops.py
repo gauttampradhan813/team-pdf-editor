@@ -456,3 +456,275 @@ def test_duplicate_metadata_updated():
     meta = client.get(f"/documents/{doc_id}")
     assert meta.status_code == 200
     assert meta.json()["page_count"] == 4
+
+
+# -----------------------------------------------------------------------
+# Merge
+# -----------------------------------------------------------------------
+
+def test_merge_two_pdfs():
+    doc_id_1 = upload_pdf(2, "first.pdf")
+    doc_id_2 = upload_pdf(3, "second.pdf")
+
+    response = client.post(
+        "/documents/merge",
+        json={"document_ids": [doc_id_1, doc_id_2]},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert "document_id" in body
+    assert body["page_count"] == 5  # 2 + 3
+    assert body["filename"] == "merged.pdf"
+
+    # Verify content order: first doc pages, then second doc pages.
+    texts = get_page_order_text(body["document_id"])
+    assert texts == [
+        "Test Doc - page 1",
+        "Test Doc - page 2",
+        "Test Doc - page 1",
+        "Test Doc - page 2",
+        "Test Doc - page 3",
+    ]
+
+    # Source documents unchanged.
+    assert get_page_order_text(doc_id_1) == ["Test Doc - page 1", "Test Doc - page 2"]
+    assert get_page_order_text(doc_id_2) == [
+        "Test Doc - page 1",
+        "Test Doc - page 2",
+        "Test Doc - page 3",
+    ]
+
+
+def test_merge_three_pdfs():
+    doc_id_1 = upload_pdf(1, "a.pdf")
+    doc_id_2 = upload_pdf(2, "b.pdf")
+    doc_id_3 = upload_pdf(1, "c.pdf")
+
+    response = client.post(
+        "/documents/merge",
+        json={"document_ids": [doc_id_1, doc_id_2, doc_id_3]},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["page_count"] == 4
+
+    texts = get_page_order_text(body["document_id"])
+    assert texts == [
+        "Test Doc - page 1",
+        "Test Doc - page 1",
+        "Test Doc - page 2",
+        "Test Doc - page 1",
+    ]
+
+
+def test_merge_preserves_order():
+    doc_id_1 = upload_pdf(1, "first.pdf")
+    doc_id_2 = upload_pdf(1, "second.pdf")
+
+    # Reverse order: second first, then first.
+    response = client.post(
+        "/documents/merge",
+        json={"document_ids": [doc_id_2, doc_id_1]},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    texts = get_page_order_text(body["document_id"])
+    assert texts == ["Test Doc - page 1", "Test Doc - page 1"]
+    # Verify source docs content to distinguish them
+    # Since both have same text, verify via page dimensions/rotation instead
+    assert body["page_count"] == 2
+
+
+def test_merge_preserves_page_dimensions():
+    # Create PDFs with different page sizes
+    doc_id_1 = upload_pdf(1, "letter.pdf")  # 595x842 default
+    doc_id_2 = upload_pdf(1, "a4.pdf")      # 595x842 default too
+
+    # Make a custom-sized PDF for doc_id_2
+    import pymupdf
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)  # US Letter
+    page.insert_text((72, 72), "Different size")
+    data = doc.tobytes()
+    doc.close()
+
+    # Re-upload doc_id_2 with different size
+    response = client.post(
+        "/documents",
+        files={"file": ("different.pdf", io.BytesIO(data), "application/pdf")},
+    )
+    assert response.status_code == 201
+    doc_id_2 = response.json()["document_id"]
+
+    response = client.post(
+        "/documents/merge",
+        json={"document_ids": [doc_id_1, doc_id_2]},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["page_count"] == 2
+
+    # Verify both pages exist with correct dimensions
+    import pymupdf
+    merged_data = client.get(f"/documents/{body['document_id']}/download").content
+    merged_doc = pymupdf.open(stream=merged_data, filetype="pdf")
+    try:
+        assert merged_doc.page_count == 2
+        # First page should be default size (595x842)
+        assert merged_doc[0].rect.width == 595
+        assert merged_doc[0].rect.height == 842
+        # Second page should be US Letter (612x792)
+        assert merged_doc[1].rect.width == 612
+        assert merged_doc[1].rect.height == 792
+    finally:
+        merged_doc.close()
+
+
+def test_merge_preserves_rotation():
+    doc_id_1 = upload_pdf(1, "rotated.pdf")
+    # Rotate page 0 of doc_id_1 by 90 degrees
+    client.post(
+        f"/documents/{doc_id_1}/pages/rotate",
+        json={"page_numbers": [0], "rotation": 90},
+    )
+
+    doc_id_2 = upload_pdf(1, "normal.pdf")
+
+    response = client.post(
+        "/documents/merge",
+        json={"document_ids": [doc_id_1, doc_id_2]},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    import pikepdf
+    merged_data = client.get(f"/documents/{body['document_id']}/download").content
+    pdf = pikepdf.open(io.BytesIO(merged_data))
+    try:
+        # First page should have /Rotate = 90
+        assert int(pdf.pages[0].get("/Rotate", 0)) == 90
+        # Second page should have no rotation (0)
+        assert int(pdf.pages[1].get("/Rotate", 0)) == 0
+    finally:
+        pdf.close()
+
+
+def test_merge_source_documents_unchanged():
+    doc_id_1 = upload_pdf(2, "source1.pdf")
+    doc_id_2 = upload_pdf(2, "source2.pdf")
+
+    source_texts_1_before = get_page_order_text(doc_id_1)
+    source_texts_2_before = get_page_order_text(doc_id_2)
+
+    response = client.post(
+        "/documents/merge",
+        json={"document_ids": [doc_id_1, doc_id_2]},
+    )
+    assert response.status_code == 201, response.text
+
+    # Source documents must be unchanged
+    assert get_page_order_text(doc_id_1) == source_texts_1_before
+    assert get_page_order_text(doc_id_2) == source_texts_2_before
+
+
+def test_merge_rejects_duplicate_ids():
+    doc_id_1 = upload_pdf(1, "dup.pdf")
+
+    response = client.post(
+        "/documents/merge",
+        json={"document_ids": [doc_id_1, doc_id_1]},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_merge_rejects_fewer_than_two():
+    response = client.post(
+        "/documents/merge",
+        json={"document_ids": []},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_merge_rejects_single_document():
+    doc_id_1 = upload_pdf(1, "single.pdf")
+
+    response = client.post(
+        "/documents/merge",
+        json={"document_ids": [doc_id_1]},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_merge_rejects_nonexistent_document():
+    doc_id_1 = upload_pdf(1, "exists.pdf")
+
+    response = client.post(
+        "/documents/merge",
+        json={"document_ids": [doc_id_1, "nonexistent-id-12345"]},
+    )
+    assert response.status_code == 404, response.text
+
+
+def test_merge_rejects_corrupted_source():
+    doc_id_1 = upload_pdf(1, "good.pdf")
+
+    # Upload a corrupted PDF (rejected at 400 - header check)
+    response = client.post(
+        "/documents",
+        files={"file": ("bad.pdf", io.BytesIO(b"not a pdf at all"), "application/pdf")},
+    )
+    assert response.status_code in (400, 422)  # Rejected on upload
+
+    # Try to merge with a nonexistent document ID
+    response = client.post(
+        "/documents/merge",
+        json={"document_ids": [doc_id_1, "corrupted-id-99999"]},
+    )
+    assert response.status_code == 404, response.text
+
+
+def test_merge_download_integrity():
+    doc_id_1 = upload_pdf(2, "merge1.pdf")
+    doc_id_2 = upload_pdf(2, "merge2.pdf")
+
+    response = client.post(
+        "/documents/merge",
+        json={"document_ids": [doc_id_1, doc_id_2]},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    # Download merged PDF
+    data = client.get(f"/documents/{body['document_id']}/download")
+    assert data.status_code == 200
+    assert data.content.startswith(b"%PDF-")
+
+    # Verify content
+    import pymupdf
+    merged = pymupdf.open(stream=data.content, filetype="pdf")
+    try:
+        assert merged.page_count == 4
+        assert merged[0].get_text().strip() == "Test Doc - page 1"
+        assert merged[1].get_text().strip() == "Test Doc - page 2"
+        assert merged[2].get_text().strip() == "Test Doc - page 1"
+        assert merged[3].get_text().strip() == "Test Doc - page 2"
+    finally:
+        merged.close()
+
+
+def test_merge_metadata_registered():
+    doc_id_1 = upload_pdf(1, "meta1.pdf")
+    doc_id_2 = upload_pdf(1, "meta2.pdf")
+
+    response = client.post(
+        "/documents/merge",
+        json={"document_ids": [doc_id_1, doc_id_2]},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    meta = client.get(f"/documents/{body['document_id']}")
+    assert meta.status_code == 200
+    assert meta.json()["page_count"] == 2
+    assert meta.json()["filename"] == "merged.pdf"

@@ -45,6 +45,17 @@
           <span class="btn-icon">&#128472;</span>
           <span class="btn-label">Download</span>
         </button>
+
+        <button
+          type="button"
+          class="nav-btn btn-merge"
+          id="btn-merge"
+          title="Merge PDFs"
+          aria-label="Merge PDFs"
+        >
+          <span class="btn-icon">&#128218;</span>
+          <span class="btn-label">Merge</span>
+        </button>
       </div>
 
       <div class="nav-status" id="nav-status">Ready</div>
@@ -261,6 +272,59 @@
         <span class="success-toast-icon">&#10004;</span>
         <span class="success-toast-message" id="success-toast-message">Operation completed</span>
         <button type="button" class="success-toast-close" id="success-toast-close" aria-label="Dismiss">&#215;</button>
+      </div>
+    </div>
+
+    <!-- Merge workspace overlay -->
+    <div class="merge-overlay" id="merge-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="merge-title">
+      <div class="merge-backdrop"></div>
+      <div class="merge-panel">
+        <div class="merge-header">
+          <h3 id="merge-title">Merge PDFs</h3>
+          <button type="button" class="merge-close" id="merge-close" aria-label="Close merge workspace">&#215;</button>
+        </div>
+
+        <div class="merge-body">
+          <div class="merge-instructions">
+            Select PDFs to merge. Drag items to reorder. The merged PDF will be created in the order shown below.
+          </div>
+
+          <!-- File input for adding PDFs -->
+          <input type="file" id="merge-file-input" accept=".pdf" multiple style="display:none;" />
+
+          <div class="merge-toolbar">
+            <button type="button" class="merge-btn merge-btn-add" id="merge-btn-add" title="Add PDFs">
+              &#128247; Add PDFs
+            </button>
+            <button type="button" class="merge-btn merge-btn-clear" id="merge-btn-clear" title="Clear all">
+              Clear All
+            </button>
+            <button type="button" class="merge-btn merge-btn-merge" id="merge-btn-merge" title="Merge selected PDFs" disabled>
+              &#128218; Merge
+            </button>
+          </div>
+
+          <!-- Merge list -->
+          <div class="merge-list-container">
+            <div class="merge-list-header">
+              <span>Document</span>
+              <span class="merge-list-pages">Pages</span>
+              <span class="merge-list-actions">Actions</span>
+            </div>
+            <div class="merge-list" id="merge-list" role="list">
+              <!-- Merge items injected here -->
+              <div class="merge-list-empty">No documents added yet.</div>
+            </div>
+          </div>
+
+          <!-- Merge progress -->
+          <div class="merge-progress" id="merge-progress" style="display:none;">
+            <div class="merge-progress-message" id="merge-progress-message">Merging documents...</div>
+            <div class="merge-progress-bar">
+              <div class="merge-progress-fill" id="merge-progress-fill"></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 

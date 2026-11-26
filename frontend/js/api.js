@@ -227,6 +227,19 @@ const API = (() => {
     return response;
   }
 
+  /**
+   * Merge multiple documents into a new PDF.
+   * @param {string[]} documentIds - Ordered list of document IDs.
+   * @returns {Promise<{document_id, filename, page_count, file_size, message}>}
+   */
+  async function mergeDocuments(documentIds) {
+    const response = await _request("POST", "/documents/merge", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ document_ids: documentIds }),
+    });
+    return response;
+  }
+
   return {
     uploadPDF,
     getDocument,
@@ -238,5 +251,6 @@ const API = (() => {
     reorderPages,
     extractPages,
     duplicatePages,
+    mergeDocuments,
   };
 })();

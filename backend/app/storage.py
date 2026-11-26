@@ -777,6 +777,122 @@ class DocumentStorage:
                 out_pdf.save(buf)
                 return buf.getvalue()
 
+    # ------------------------------------------------------------------
+    # Merge multiple documents
+    # ------------------------------------------------------------------
+
+    def merge_documents(
+        self,
+        document_ids: list[str],
+        filename: str = "merged.pdf",
+    ) -> DocumentRecord:
+        """Merge multiple stored PDFs into a single new document.
+
+        Args:
+            document_ids: Ordered list of document IDs to merge.
+            filename: Filename for the merged result.
+
+        Returns:
+            A new :class:`DocumentRecord` for the merged document.
+
+        Raises:
+            DocumentNotFoundError: Any document ID does not exist.
+            ValueError: Fewer than two documents or duplicate IDs.
+            StorageError: Filesystem operation failed or validation failed.
+        """
+        # --- Validation (all under lock) ---
+        if len(document_ids) < 2:
+            raise ValueError("At least two documents are required for merging.")
+
+        # Reject duplicate IDs.
+        if len(set(document_ids)) != len(document_ids):
+            raise ValueError("Duplicate document IDs are not allowed.")
+
+        with self._lock:
+            records = []
+            for doc_id in document_ids:
+                self._validate_document_id(doc_id)
+                record = self._documents.get(doc_id)
+                if record is None:
+                    # Try hydration from disk.
+                    metadata_path = self._metadata_path(doc_id)
+                    if metadata_path.exists():
+                        try:
+                            data = json.loads(
+                                metadata_path.read_text(encoding="utf-8")
+                            )
+                            record = DocumentRecord(**data)
+                            self._documents[doc_id] = record
+                        except (json.JSONDecodeError, TypeError, OSError):
+                            record = None
+                    if record is None:
+                        raise DocumentNotFoundError(
+                            f"Document not found: {doc_id}"
+                        )
+                records.append(record)
+
+            # Verify all source PDF files exist on disk.
+            for record in records:
+                if not self._pdf_path(record.document_id).exists():
+                    raise DocumentNotFoundError(
+                        f"Document file missing: {record.document_id}"
+                    )
+
+        # --- Build merged PDF outside the lock (CPU-bound) ---
+        try:
+            merged_bytes = self._merge_pdfs_file(
+                [self._pdf_path(r.document_id) for r in records]
+            )
+        except Exception as exc:
+            raise StorageError(f"Failed to merge PDFs: {exc}") from exc
+
+        # --- Validate output by reopening ---
+        try:
+            import pymupdf
+
+            with pymupdf.open(stream=merged_bytes, filetype="pdf") as validate_doc:
+                merged_page_count = validate_doc.page_count
+        except Exception as exc:
+            raise StorageError(
+                f"Merged PDF validation failed: {exc}"
+            ) from exc
+
+        # --- Register as a new document ---
+        with self._lock:
+            try:
+                new_record = self.store(
+                    filename=filename,
+                    data=merged_bytes,
+                    page_count=merged_page_count,
+                    metadata={},
+                )
+            except StorageError:
+                raise
+
+        return new_record
+
+    @staticmethod
+    def _merge_pdfs_file(
+        src_paths: list[Path],
+    ) -> bytes:
+        """Merge multiple PDF files into a single bytes object.
+
+        Uses pikepdf to append all pages from each source in order,
+        preserving content, fonts, images, page dimensions, rotation,
+        links, and annotations where supported. No rasterization occurs.
+        """
+        import pikepdf
+        import io
+
+        with pikepdf.new() as out_pdf:
+            for src_path in src_paths:
+                with pikepdf.open(src_path) as pdf:
+                    for page in pdf.pages:
+                        out_pdf.pages.append(page)
+            buf = io.BytesIO()
+            out_pdf.save(buf)
+            return buf.getvalue()
+
 
 # ------------------------------------------------------------------
 # Shared singleton instance used by all API routers.

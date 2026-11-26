@@ -46,6 +46,18 @@ const App = (() => {
     successToast: document.getElementById("success-toast"),
     successToastMessage: document.getElementById("success-toast-message"),
     successToastClose: document.getElementById("success-toast-close"),
+    // Merge workspace refs
+    btnMerge: document.getElementById("btn-merge"),
+    mergeOverlay: document.getElementById("merge-overlay"),
+    mergeClose: document.getElementById("merge-close"),
+    mergeFileInput: document.getElementById("merge-file-input"),
+    mergeBtnAdd: document.getElementById("merge-btn-add"),
+    mergeBtnClear: document.getElementById("merge-btn-clear"),
+    mergeBtnMerge: document.getElementById("merge-btn-merge"),
+    mergeList: document.getElementById("merge-list"),
+    mergeProgress: document.getElementById("merge-progress"),
+    mergeProgressMessage: document.getElementById("merge-progress-message"),
+    mergeProgressFill: document.getElementById("merge-progress-fill"),
     // Toolbar refs
     btnPrev: document.getElementById("btn-prev"),
     btnNext: document.getElementById("btn-next"),
@@ -71,6 +83,8 @@ const App = (() => {
     sidebarVisible: true,
     pendingDeletePages: null, // zero-based indices awaiting confirmation
     extractedDocuments: [], // [{ document_id, filename, page_count }]
+    mergeList: [], // [{ document_id, filename, page_count }]
+    mergeInProgress: false,
   };
 
   // ------------------------------------------------------------------
@@ -154,6 +168,22 @@ const App = (() => {
 
     // Success toast close
     els.successToastClose.addEventListener("click", _hideSuccess);
+
+    // Merge workspace events
+    els.btnMerge.addEventListener("click", _openMergeWorkspace);
+    els.mergeClose.addEventListener("click", _closeMergeWorkspace);
+    els.mergeBtnAdd.addEventListener("click", () => {
+      els.mergeFileInput.value = "";
+      els.mergeFileInput.click();
+    });
+    els.mergeFileInput.addEventListener("change", (e) => {
+      const files = Array.from(e.target.files || []);
+      if (files.length) {
+        _addFilesToMergeList(files);
+      }
+    });
+    els.mergeBtnClear.addEventListener("click", _clearMergeList);
+    els.mergeBtnMerge.addEventListener("click", _executeMerge);
   }
 
   // ------------------------------------------------------------------
@@ -624,6 +654,226 @@ const App = (() => {
   }
 
   // ------------------------------------------------------------------
+  // Merge workspace operations
+  // ------------------------------------------------------------------
+
+  function _openMergeWorkspace() {
+    els.mergeOverlay.style.display = "flex";
+    _renderMergeList();
+  }
+
+  function _closeMergeWorkspace() {
+    els.mergeOverlay.style.display = "none";
+  }
+
+  async function _addFilesToMergeList(files) {
+    _setLoading(true);
+    _hideError();
+
+    try {
+      for (const file of files) {
+        if (!file.type || !file.type.includes("pdf")) {
+          _showError(`"${file.name}" is not a PDF file.`);
+          continue;
+        }
+
+        try {
+          const result = await API.uploadPDF(file);
+          // Check if already in merge list
+          const alreadyExists = state.mergeList.some(
+            (item) => item.document_id === result.document_id
+          );
+          if (!alreadyExists) {
+            state.mergeList.push({
+              document_id: result.document_id,
+              filename: result.filename,
+              page_count: result.page_count,
+            });
+          }
+        } catch (err) {
+          _showError(`Failed to upload "${file.name}": ${err.message}`);
+        }
+      }
+
+      _renderMergeList();
+      _updateMergeButtonState();
+    } finally {
+      _setLoading(false);
+    }
+  }
+
+  function _removeFromMergeList(index) {
+    state.mergeList.splice(index, 1);
+    _renderMergeList();
+    _updateMergeButtonState();
+  }
+
+  function _clearMergeList() {
+    state.mergeList = [];
+    _renderMergeList();
+    _updateMergeButtonState();
+  }
+
+  function _renderMergeList() {
+    if (!els.mergeList) return;
+
+    els.mergeList.innerHTML = "";
+
+    if (state.mergeList.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "merge-list-empty";
+      empty.textContent = "No documents added yet.";
+      els.mergeList.appendChild(empty);
+      return;
+    }
+
+    state.mergeList.forEach((item, index) => {
+      const mergeItem = document.createElement("div");
+      mergeItem.className = "merge-item";
+      mergeItem.dataset.index = index;
+      mergeItem.draggable = true;
+
+      // Order badge
+      const orderBadge = document.createElement("span");
+      orderBadge.className = "merge-item-order";
+      orderBadge.textContent = index + 1;
+      mergeItem.appendChild(orderBadge);
+
+      // Info
+      const info = document.createElement("div");
+      info.className = "merge-item-info";
+
+      const filename = document.createElement("div");
+      filename.className = "merge-item-filename";
+      filename.textContent = item.filename;
+      info.appendChild(filename);
+
+      const pages = document.createElement("div");
+      pages.className = "merge-item-pages";
+      pages.textContent = `${item.page_count} page${item.page_count !== 1 ? "s" : ""}`;
+      info.appendChild(pages);
+
+      mergeItem.appendChild(info);
+
+      // Actions
+      const actions = document.createElement("div");
+      actions.className = "merge-item-actions";
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "merge-item-remove";
+      removeBtn.title = "Remove from merge list";
+      removeBtn.textContent = "Remove";
+      removeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        _removeFromMergeList(index);
+      });
+      actions.appendChild(removeBtn);
+
+      mergeItem.appendChild(actions);
+
+      // Drag and drop
+      mergeItem.addEventListener("dragstart", (e) => {
+        mergeItem.classList.add("drag-source");
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", String(index));
+      });
+
+      mergeItem.addEventListener("dragend", () => {
+        mergeItem.classList.remove("drag-source");
+        document.querySelectorAll(".merge-item").forEach((el) => {
+          el.classList.remove("drag-over");
+        });
+      });
+
+      mergeItem.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        mergeItem.classList.add("drag-over");
+      });
+
+      mergeItem.addEventListener("dragleave", () => {
+        mergeItem.classList.remove("drag-over");
+      });
+
+      mergeItem.addEventListener("drop", (e) => {
+        e.preventDefault();
+        mergeItem.classList.remove("drag-over");
+
+        const sourceIndex = parseInt(e.dataTransfer.getData("text/plain"), 10);
+        const targetIndex = index;
+        if (sourceIndex !== targetIndex) {
+          const [moved] = state.mergeList.splice(sourceIndex, 1);
+          state.mergeList.splice(targetIndex, 0, moved);
+          _renderMergeList();
+          _updateMergeButtonState();
+        }
+      });
+
+      els.mergeList.appendChild(mergeItem);
+    });
+  }
+
+  function _updateMergeButtonState() {
+    if (els.mergeBtnMerge) {
+      els.mergeBtnMerge.disabled = state.mergeList.length < 2;
+    }
+  }
+
+  async function _executeMerge() {
+    if (state.mergeList.length < 2) return;
+
+    const documentIds = state.mergeList.map((item) => item.document_id);
+
+    _setLoading(true);
+    els.mergeProgress.style.display = "block";
+    els.mergeProgressFill.style.width = "0%";
+    els.mergeProgressMessage.textContent = "Merging documents...";
+    _hideError();
+
+    try {
+      const result = await API.mergeDocuments(documentIds);
+      els.mergeProgressFill.style.width = "100%";
+      _showSuccess(`Merged ${state.mergeList.length} document(s) into "${result.filename}".`);
+
+      // Close merge workspace after a brief delay
+      setTimeout(() => {
+        _closeMergeWorkspace();
+        els.mergeProgress.style.display = "none";
+      }, 800);
+
+      // Load the merged document into the viewer
+      state.documentId = result.document_id;
+      state.filename = result.filename;
+      state.pageCount = result.page_count || 0;
+      state.currentPage = 1;
+
+      els.navFilename.textContent = state.filename;
+      els.navFilename.title = state.filename;
+      els.navStatus.textContent = "Document loaded";
+      els.btnDownload.disabled = false;
+
+      _showViewer();
+      Viewer.loadDocument(state.documentId, state.pageCount);
+      Thumbnails.loadDocument(state.documentId, state.pageCount);
+      Toolbar.updatePagination(state.currentPage, state.pageCount);
+      Toolbar.updateZoom(Viewer.getZoomPercent(), Viewer.getState().fitMode);
+
+      // Clear merge list
+      state.mergeList = [];
+      _renderMergeList();
+      _updateMergeButtonState();
+    } catch (err) {
+      _showError(err.message || "Failed to merge documents");
+    } finally {
+      _setLoading(false);
+      if (!els.mergeOverlay.style.display || els.mergeOverlay.style.display === "none") {
+        els.mergeProgress.style.display = "none";
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
   // UI helpers
   // ------------------------------------------------------------------
 
@@ -642,6 +892,7 @@ const App = (() => {
   function _setLoading(loading) {
     state.isLoading = loading;
     els.btnOpen.disabled = loading;
+    if (els.btnMerge) els.btnMerge.disabled = loading;
     Toolbar.setLoading(loading);
     if (loading) {
       els.navStatus.textContent = "Loading…";
