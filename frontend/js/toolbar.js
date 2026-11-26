@@ -55,9 +55,14 @@ const Toolbar = (() => {
       if (callbacks.onActualSize) callbacks.onActualSize();
     });
 
-    // Rotate
+    // Rotate selected
     elements.btnRotate.addEventListener("click", () => {
-      if (callbacks.onRotate) callbacks.onRotate();
+      if (callbacks.onRotateSelected) callbacks.onRotateSelected();
+    });
+
+    // Delete selected
+    elements.btnDeletePage.addEventListener("click", () => {
+      if (callbacks.onDeleteSelected) callbacks.onDeleteSelected();
     });
 
     // Toggle thumbnails
@@ -93,7 +98,6 @@ const Toolbar = (() => {
       elements.toolbarZoom.textContent = `${percent}%`;
     }
 
-    // Update active toggle state
     const toggles = [elements.btnFitWidth, elements.btnFitPage, elements.btnActualSize];
     toggles.forEach((btn) => {
       if (!btn) return;
@@ -106,17 +110,30 @@ const Toolbar = (() => {
     });
   }
 
+  function setSelectionCount(count) {
+    if (!elements) return;
+    if (elements.btnRotate) {
+      elements.btnRotate.disabled = count === 0;
+    }
+    if (elements.btnDeletePage) {
+      elements.btnDeletePage.disabled = count === 0;
+    }
+  }
+
   function setLoading(loading) {
     if (elements.btnPrev) elements.btnPrev.disabled = loading;
     if (elements.btnNext) elements.btnNext.disabled = loading;
     if (elements.btnZoomIn) elements.btnZoomIn.disabled = loading;
     if (elements.btnZoomOut) elements.btnZoomOut.disabled = loading;
+    if (elements.btnRotate) elements.btnRotate.disabled = loading;
+    if (elements.btnDeletePage) elements.btnDeletePage.disabled = loading;
   }
 
   return {
     init,
     updatePagination,
     updateZoom,
+    setSelectionCount,
     setLoading,
   };
 })();

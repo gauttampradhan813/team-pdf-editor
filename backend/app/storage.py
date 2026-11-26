@@ -339,6 +339,267 @@ class DocumentStorage:
         with self._lock:
             return sorted(self._documents.values(), key=lambda r: r.created_at, reverse=True)
 
+    # ------------------------------------------------------------------
+    # Page operations (rotate / delete / reorder)
+    # ------------------------------------------------------------------
+
+    def rotate_pages(
+        self,
+        document_id: str,
+        page_indices: list[int],
+        rotation: int,
+    ) -> DocumentRecord:
+        """Rotate selected pages in place.
+
+        Args:
+            document_id: Target document.
+            page_indices: Zero-based page indices to rotate.
+            rotation: 90, 180, or 270 degrees clockwise.
+
+        Returns:
+            Updated :class:`DocumentRecord`.
+
+        Raises:
+            DocumentNotFoundError: Document or pages not found.
+            ValueError: Invalid rotation value or page indices.
+            StorageError: Filesystem operation failed.
+        """
+        if rotation not in (90, 180, 270):
+            raise ValueError("Rotation must be 90, 180, or 270 degrees.")
+
+        with self._lock:
+            self._validate_document_id(document_id)
+            record = self._documents.get(document_id)
+            if record is None:
+                raise DocumentNotFoundError(f"Document not found: {document_id}")
+
+            page_count = record.page_count
+            for idx in page_indices:
+                if idx < 0 or idx >= page_count:
+                    raise ValueError(
+                        f"Page index {idx} out of range (0-{page_count - 1})"
+                    )
+
+            # Build temp output in the document directory.
+            doc_dir = self._document_dir(document_id)
+            src_path = self._pdf_path(document_id)
+            tmp_path = doc_dir / "document.tmp.pdf"
+
+            try:
+                self._rotate_pages_file(src_path, tmp_path, page_indices, rotation)
+            except Exception as exc:
+                tmp_path.unlink(missing_ok=True)
+                raise StorageError(f"Failed to rotate pages: {exc}") from exc
+
+            # Replace original atomically.
+            tmp_path.replace(src_path)
+
+            # Update metadata.
+            new_metadata = dict(record.metadata)
+            new_metadata["rotation_applied"] = rotation
+            new_page_count = page_count  # rotation does not change page count
+            record.page_count = new_page_count
+            record.metadata = new_metadata
+            record.touch()
+            self._metadata_path(document_id).write_text(
+                json.dumps(record.to_dict(), indent=2), encoding="utf-8"
+            )
+
+            # Invalidate all page render caches for this document.
+            self._invalidate_document_cache(document_id)
+
+        return record
+
+    def delete_pages(
+        self,
+        document_id: str,
+        page_indices: list[int],
+    ) -> DocumentRecord:
+        """Delete selected pages from the document.
+
+        Args:
+            document_id: Target document.
+            page_indices: Zero-based page indices to delete.
+
+        Returns:
+            Updated :class:`DocumentRecord`.
+
+        Raises:
+            DocumentNotFoundError: Document not found.
+            ValueError: Invalid indices or would leave zero pages.
+            StorageError: Filesystem operation failed.
+        """
+        with self._lock:
+            self._validate_document_id(document_id)
+            record = self._documents.get(document_id)
+            if record is None:
+                raise DocumentNotFoundError(f"Document not found: {document_id}")
+
+            page_count = record.page_count
+            # Normalize and validate indices.
+            unique = set(page_indices)
+            for idx in unique:
+                if idx < 0 or idx >= page_count:
+                    raise ValueError(
+                        f"Page index {idx} out of range (0-{page_count - 1})"
+                    )
+
+            remaining = page_count - len(unique)
+            if remaining == 0:
+                raise ValueError("Cannot delete all pages from a document.")
+
+            # Build sorted list of kept zero-based indices.
+            kept = [i for i in range(page_count) if i not in unique]
+
+            doc_dir = self._document_dir(document_id)
+            src_path = self._pdf_path(document_id)
+            tmp_path = doc_dir / "document.tmp.pdf"
+
+            try:
+                self._reorder_pages_file(src_path, tmp_path, kept)
+            except Exception as exc:
+                tmp_path.unlink(missing_ok=True)
+                raise StorageError(f"Failed to delete pages: {exc}") from exc
+
+            tmp_path.replace(src_path)
+
+            # Update metadata.
+            new_metadata = dict(record.metadata)
+            record.page_count = remaining
+            record.metadata = new_metadata
+            record.touch()
+            self._metadata_path(document_id).write_text(
+                json.dumps(record.to_dict(), indent=2), encoding="utf-8"
+            )
+
+            # Invalidate all page render caches for this document.
+            self._invalidate_document_cache(document_id)
+
+        return record
+
+    def reorder_pages(
+        self,
+        document_id: str,
+        page_order: list[int],
+    ) -> DocumentRecord:
+        """Reorder pages according to the supplied order.
+
+        Args:
+            document_id: Target document.
+            page_order: Complete list of zero-based original page indices
+                in the desired new order.
+
+        Returns:
+            Updated :class:`DocumentRecord`.
+
+        Raises:
+            DocumentNotFoundError: Document not found.
+            ValueError: Invalid, missing, or duplicated indices.
+            StorageError: Filesystem operation failed.
+        """
+        with self._lock:
+            self._validate_document_id(document_id)
+            record = self._documents.get(document_id)
+            if record is None:
+                raise DocumentNotFoundError(f"Document not found: {document_id}")
+
+            page_count = record.page_count
+
+            # Validate: every original index appears exactly once.
+            if len(page_order) != page_count:
+                raise ValueError(
+                    f"Page order must contain exactly {page_count} indices "
+                    f"(got {len(page_order)})."
+                )
+            seen = set()
+            for idx in page_order:
+                if not isinstance(idx, int) or idx < 0 or idx >= page_count:
+                    raise ValueError(
+                        f"Page index {idx} out of range (0-{page_count - 1})"
+                    )
+                if idx in seen:
+                    raise ValueError(f"Duplicate page index {idx} in order.")
+                seen.add(idx)
+
+            doc_dir = self._document_dir(document_id)
+            src_path = self._pdf_path(document_id)
+            tmp_path = doc_dir / "document.tmp.pdf"
+
+            try:
+                self._reorder_pages_file(src_path, tmp_path, page_order)
+            except Exception as exc:
+                tmp_path.unlink(missing_ok=True)
+                raise StorageError(f"Failed to reorder pages: {exc}") from exc
+
+            tmp_path.replace(src_path)
+
+            # Update metadata.
+            new_metadata = dict(record.metadata)
+            record.metadata = new_metadata
+            record.touch()
+            self._metadata_path(document_id).write_text(
+                json.dumps(record.to_dict(), indent=2), encoding="utf-8"
+            )
+
+            # Invalidate all page render caches for this document.
+            self._invalidate_document_cache(document_id)
+
+        return record
+
+    # ------------------------------------------------------------------
+    # Low-level PDF manipulation helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _rotate_pages_file(
+        src_path: Path,
+        tmp_path: Path,
+        page_indices: list[int],
+        rotation: int,
+    ) -> None:
+        """Rotate pages in ``src_path`` and write result to ``tmp_path``."""
+        import pikepdf
+
+        with pikepdf.open(src_path) as pdf:
+            for idx in page_indices:
+                page = pdf.pages[idx]
+                # pikepdf Rotation attribute: /Rotate 90/180/270
+                page.Rotate = rotation
+            pdf.save(tmp_path)
+
+    @staticmethod
+    def _reorder_pages_file(
+        src_path: Path,
+        tmp_path: Path,
+        new_order: list[int],
+    ) -> None:
+        """Reorder pages in ``src_path`` according to ``new_order`` and write
+        result to ``tmp_path``. ``new_order`` contains zero-based original
+        indices in desired order."""
+        import pikepdf
+
+        with pikepdf.open(src_path) as pdf:
+            pages = list(pdf.pages)
+            ordered_pages = [pages[i] for i in new_order]
+            with pikepdf.new() as out_pdf:
+                for pg in ordered_pages:
+                    out_pdf.pages.append(pg)
+                out_pdf.save(tmp_path)
+
+    def _invalidate_document_cache(self, document_id: str) -> None:
+        """Remove all in-memory and on-disk page cache entries for a document."""
+        keys_to_delete = [
+            key
+            for key in self._page_cache
+            if key.startswith(f"{document_id}:")
+        ]
+        for key in keys_to_delete:
+            del self._page_cache[key]
+
+        cache_dir = self._document_dir(document_id) / "cache"
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
 
 # ------------------------------------------------------------------
 # Shared singleton instance used by all API routers.

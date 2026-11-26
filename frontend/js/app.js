@@ -26,6 +26,11 @@ const App = (() => {
     errorToast: document.getElementById("error-toast"),
     errorToastMessage: document.getElementById("error-toast-message"),
     errorToastClose: document.getElementById("error-toast-close"),
+    // Confirm dialog refs
+    confirmDialog: document.getElementById("confirm-dialog"),
+    confirmCancel: document.getElementById("confirm-cancel"),
+    confirmDelete: document.getElementById("confirm-delete"),
+    confirmMessage: document.getElementById("confirm-message"),
     // Toolbar refs
     btnPrev: document.getElementById("btn-prev"),
     btnNext: document.getElementById("btn-next"),
@@ -37,6 +42,7 @@ const App = (() => {
     btnFitPage: document.getElementById("btn-fit-page"),
     btnActualSize: document.getElementById("btn-actual-size"),
     btnRotate: document.getElementById("btn-rotate"),
+    btnDeletePage: document.getElementById("btn-delete-page"),
     toolbarZoom: document.getElementById("toolbar-zoom"),
   };
 
@@ -48,6 +54,7 @@ const App = (() => {
     currentPage: 1,
     isLoading: false,
     sidebarVisible: true,
+    pendingDeletePages: null, // zero-based indices awaiting confirmation
   };
 
   // ------------------------------------------------------------------
@@ -78,6 +85,9 @@ const App = (() => {
         Viewer.setCurrentPage(pageNumber);
         Toolbar.updatePagination(pageNumber, state.pageCount);
       },
+      onPageSelect: (selected) => {
+        Toolbar.setSelectionCount(selected.length);
+      },
     });
 
     Toolbar.init(
@@ -92,6 +102,7 @@ const App = (() => {
         btnFitPage: els.btnFitPage,
         btnActualSize: els.btnActualSize,
         btnRotate: els.btnRotate,
+        btnDeletePage: els.btnDeletePage,
         btnToggleThumbnails: els.btnToggleThumbnails,
       },
       {
@@ -103,10 +114,15 @@ const App = (() => {
         onFitWidth: () => _fitWidth(),
         onFitPage: () => _fitPage(),
         onActualSize: () => _actualSize(),
-        onRotate: () => _rotate(),
+        onRotateSelected: () => _rotateSelected(),
+        onDeleteSelected: () => _confirmDelete(),
         onToggleThumbnails: _toggleSidebar,
       }
     );
+
+    // Confirm dialog events
+    els.confirmCancel.addEventListener("click", _hideConfirm);
+    els.confirmDelete.addEventListener("click", _executeDelete);
   }
 
   // ------------------------------------------------------------------
@@ -329,6 +345,102 @@ const App = (() => {
     Viewer.setActualSize();
     const s = Viewer.getState();
     Toolbar.updateZoom(Viewer.getZoomPercent(), s.fitMode);
+  }
+
+  // ------------------------------------------------------------------
+  // Page operations (rotate / delete)
+  // ------------------------------------------------------------------
+
+  async function _rotateSelected() {
+    const selected = Viewer.getSelectedZeroBased();
+    if (!selected.length) return;
+
+    _setLoading(true);
+    _hideError();
+
+    try {
+      const result = await API.rotatePages(state.documentId, selected, 90);
+      _applyDocumentUpdate(result);
+    } catch (err) {
+      _showError(err.message || "Failed to rotate pages");
+    } finally {
+      _setLoading(false);
+    }
+  }
+
+  async function _confirmDelete() {
+    const selected = Viewer.getSelectedZeroBased();
+    if (!selected.length) return;
+
+    state.pendingDeletePages = selected;
+    const count = selected.length;
+    els.confirmMessage.textContent = `Delete ${count} page${count === 1 ? "" : "s"}?`;
+    els.confirmDialog.style.display = "flex";
+  }
+
+  function _hideConfirm() {
+    els.confirmDialog.style.display = "none";
+    state.pendingDeletePages = null;
+  }
+
+  async function _executeDelete() {
+    const pages = state.pendingDeletePages;
+    if (!pages || !pages.length) {
+      _hideConfirm();
+      return;
+    }
+
+    _hideConfirm();
+    _setLoading(true);
+    _hideError();
+
+    try {
+      const result = await API.deletePages(state.documentId, pages);
+      _applyDocumentUpdate(result);
+      Viewer.clearPageSelection();
+      Thumbnails.clearSelection();
+      Toolbar.setSelectionCount(0);
+    } catch (err) {
+      _showError(err.message || "Failed to delete pages");
+    } finally {
+      _setLoading(false);
+    }
+  }
+
+  function _applyDocumentUpdate(result) {
+    if (!result || !result.page_count) return;
+
+    state.pageCount = result.page_count;
+
+    // Refresh viewer (clears cache, rebuilds elements)
+    Viewer.refreshDocument(state.pageCount).then(() => {
+      // Re-render thumbnails
+      Thumbnails.loadDocument(state.documentId, state.pageCount);
+      // Update toolbar
+      Toolbar.updatePagination(state.currentPage, state.pageCount);
+      Toolbar.updateZoom(Viewer.getZoomPercent(), Viewer.getState().fitMode);
+      Toolbar.setSelectionCount(0);
+      // Ensure current page is valid
+      if (state.currentPage > state.pageCount) {
+        _goToPage(state.pageCount);
+      }
+    });
+
+    // Refresh metadata
+    _refreshMetadata();
+  }
+
+  async function _refreshMetadata() {
+    try {
+      const meta = await API.getDocument(state.documentId);
+      state.pageCount = meta.page_count || state.page_count;
+      state.filename = meta.filename || state.filename;
+      els.navFilename.textContent = state.filename;
+      els.navFilename.title = state.filename;
+      Toolbar.updatePagination(state.currentPage, state.pageCount);
+    } catch (_) {
+      // Metadata refresh is non-critical
+    }
   }
 
   function _rotate() {

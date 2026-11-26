@@ -155,11 +155,57 @@ const API = (() => {
     return URL.createObjectURL(blob);
   }
 
+  /**
+   * Rotate selected pages.
+   * @param {string} documentId
+   * @param {number[]} pageNumbers - Zero-based page indices.
+   * @param {number} rotation - 90, 180, or 270.
+   * @returns {Promise<{document_id, page_count, message}>}
+   */
+  async function rotatePages(documentId, pageNumbers, rotation) {
+    const response = await _request("POST", `/documents/${encodeURIComponent(documentId)}/pages/rotate`, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ page_numbers: pageNumbers, rotation }),
+    });
+    return response;
+  }
+
+  /**
+   * Delete selected pages.
+   * @param {string} documentId
+   * @param {number[]} pageNumbers - Zero-based page indices.
+   * @returns {Promise<{document_id, page_count, message}>}
+   */
+  async function deletePages(documentId, pageNumbers) {
+    const response = await _request("POST", `/documents/${encodeURIComponent(documentId)}/pages/delete`, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ page_numbers: pageNumbers }),
+    });
+    return response;
+  }
+
+  /**
+   * Reorder pages.
+   * @param {string} documentId
+   * @param {number[]} pageOrder - Complete list of zero-based original indices.
+   * @returns {Promise<{document_id, page_count, message}>}
+   */
+  async function reorderPages(documentId, pageOrder) {
+    const response = await _request("POST", `/documents/${encodeURIComponent(documentId)}/pages/reorder`, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ page_order: pageOrder }),
+    });
+    return response;
+  }
+
   return {
     uploadPDF,
     getDocument,
     downloadPDF,
     deleteDocument,
     renderPage,
+    rotatePages,
+    deletePages,
+    reorderPages,
   };
 })();

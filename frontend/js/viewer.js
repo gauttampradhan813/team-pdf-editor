@@ -26,6 +26,7 @@ const Viewer = (() => {
   let rotation = 0; // 0, 90, 180, 270
   let scale = DEFAULT_SCALE;
   let fitMode = "fit-width"; // fit-width | fit-page | actual
+  const selectedPages = new Set(); // 1-based page numbers
 
   // Browser-side cache: key = "${pageNumber}:${scale}:${rotation}" -> blob URL
   const pageCache = new Map();
@@ -100,8 +101,14 @@ const Viewer = (() => {
       img.style.display = "block";
       pageEl.appendChild(img);
 
+      const badge = document.createElement("span");
+      badge.className = "page-selection-badge";
+      badge.textContent = "✓";
+      badge.style.display = "none";
+      pageEl.appendChild(badge);
+
       viewport.appendChild(pageEl);
-      pageElements.set(i, { el: pageEl, img });
+      pageElements.set(i, { el: pageEl, img, badge });
     }
   }
 
@@ -143,8 +150,106 @@ const Viewer = (() => {
   }
 
   // ------------------------------------------------------------------
-  // Zoom / fit modes
+  // Page selection
   // ------------------------------------------------------------------
+
+  function togglePageSelection(pageNumber) {
+    if (selectedPages.has(pageNumber)) {
+      selectedPages.delete(pageNumber);
+    } else {
+      selectedPages.add(pageNumber);
+    }
+    _updatePageSelectionUI(pageNumber);
+    return selectedPages.has(pageNumber);
+  }
+
+  function selectAllPages() {
+    for (let i = 1; i <= pageCount; i++) {
+      selectedPages.add(i);
+    }
+    _updateAllPageSelectionUI();
+    return selectedPages.size;
+  }
+
+  function clearPageSelection() {
+    selectedPages.clear();
+    _updateAllPageSelectionUI();
+  }
+
+  function getSelectedPages() {
+    return [...selectedPages].sort((a, b) => a - b);
+  }
+
+  function getSelectedZeroBased() {
+    return [...selectedPages].map((p) => p - 1).sort((a, b) => a - b);
+  }
+
+  function isPageSelected(pageNumber) {
+    return selectedPages.has(pageNumber);
+  }
+
+  function _updatePageSelectionUI(pageNumber) {
+    const entry = pageElements.get(pageNumber);
+    if (!entry) return;
+    if (selectedPages.has(pageNumber)) {
+      entry.el.classList.add("selected");
+      entry.badge.style.display = "block";
+    } else {
+      entry.el.classList.remove("selected");
+      entry.badge.style.display = "none";
+    }
+  }
+
+  function _updateAllPageSelectionUI() {
+    for (const [pageNum, entry] of pageElements.entries()) {
+      if (selectedPages.has(pageNum)) {
+        entry.el.classList.add("selected");
+        entry.badge.style.display = "block";
+      } else {
+        entry.el.classList.remove("selected");
+        entry.badge.style.display = "none";
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Document refresh after operations
+  // ------------------------------------------------------------------
+
+  /**
+   * Refresh the viewer after a document modification.
+   * Clears browser-side render cache, rebuilds page elements, and
+   * re-renders visible pages.
+   */
+  async function refreshDocument(newPageCount) {
+    // Revoke all cached blob URLs
+    for (const url of pageCache.values()) {
+      URL.revokeObjectURL(url);
+    }
+    pageCache.clear();
+    inFlight.clear();
+
+    pageCount = newPageCount;
+    selectedPages.clear();
+
+    // Rebuild page elements to match new count
+    _createPageElements();
+    _applyRotation();
+    _updateAllPageSelectionUI();
+    _renderVisiblePages();
+  }
+
+  function getState() {
+    return {
+      documentId,
+      pageCount,
+      currentPage,
+      rotation,
+      scale,
+      fitMode,
+      selectedPages: [...selectedPages],
+    };
+  }
 
   function zoomIn() {
     if (fitMode !== "actual") {
@@ -388,5 +493,12 @@ const Viewer = (() => {
     isFitModeActive,
     renderPageOnDemand,
     getPageElement,
+    togglePageSelection,
+    selectAllPages,
+    clearPageSelection,
+    getSelectedPages,
+    getSelectedZeroBased,
+    isPageSelected,
+    refreshDocument,
   };
 })();
