@@ -58,6 +58,24 @@ const App = (() => {
     mergeProgress: document.getElementById("merge-progress"),
     mergeProgressMessage: document.getElementById("merge-progress-message"),
     mergeProgressFill: document.getElementById("merge-progress-fill"),
+    // Split workspace refs
+    btnSplit: document.getElementById("btn-split"),
+    splitOverlay: document.getElementById("split-overlay"),
+    splitClose: document.getElementById("split-close"),
+    splitEveryN: document.getElementById("split-every-n"),
+    splitRanges: document.getElementById("split-ranges"),
+    splitBtnSplit: document.getElementById("split-btn-split"),
+    splitProgress: document.getElementById("split-progress"),
+    splitProgressMessage: document.getElementById("split-progress-message"),
+    splitProgressFill: document.getElementById("split-progress-fill"),
+    splitResults: document.getElementById("split-results"),
+    splitResultsCount: document.getElementById("split-results-count"),
+    splitResultsList: document.getElementById("split-results-list"),
+    splitBtnDownloadAll: document.getElementById("split-btn-download-all"),
+    splitBtnCloseResults: document.getElementById("split-btn-close-results"),
+    splitEveryNSection: document.getElementById("split-every-n-section"),
+    splitRangesSection: document.getElementById("split-ranges-section"),
+    splitPreviewSection: document.getElementById("split-preview-section"),
     // Toolbar refs
     btnPrev: document.getElementById("btn-prev"),
     btnNext: document.getElementById("btn-next"),
@@ -85,6 +103,13 @@ const App = (() => {
     extractedDocuments: [], // [{ document_id, filename, page_count }]
     mergeList: [], // [{ document_id, filename, page_count }]
     mergeInProgress: false,
+    splitState: {
+      mode: "each_page",
+      everyN: 1,
+      ranges: "",
+      outputs: [],
+      inProgress: false,
+    },
   };
 
   // ------------------------------------------------------------------
@@ -275,6 +300,37 @@ const App = (() => {
         return;
       }
     });
+
+    // Split workspace events
+    els.btnSplit.addEventListener("click", _openSplitWorkspace);
+    els.splitClose.addEventListener("click", _closeSplitWorkspace);
+
+    // Split mode radio changes
+    document.querySelectorAll('input[name="split-mode"]').forEach((radio) => {
+      radio.addEventListener("change", (e) => {
+        state.splitState.mode = e.target.value;
+        _updateSplitModeUI();
+      });
+    });
+
+    // Split every N input change
+    els.splitEveryN.addEventListener("input", () => {
+      state.splitState.everyN = parseInt(els.splitEveryN.value, 10) || 1;
+      _updateSplitPreview();
+    });
+
+    // Split ranges input change
+    els.splitRanges.addEventListener("input", () => {
+      state.splitState.ranges = els.splitRanges.value.trim();
+      _updateSplitPreview();
+    });
+
+    // Split button
+    els.splitBtnSplit.addEventListener("click", _executeSplit);
+
+    // Split results actions
+    els.splitBtnDownloadAll.addEventListener("click", _downloadSplitZip);
+    els.splitBtnCloseResults.addEventListener("click", _closeSplitResults);
   }
 
   // ------------------------------------------------------------------
@@ -652,6 +708,232 @@ const App = (() => {
     }
     return unique;
   }
+
+  // Split workspace operations
+  // ------------------------------------------------------------------
+
+  function _openSplitWorkspace() {
+    if (!state.documentId) {
+      _showError("No document loaded. Open a PDF first.");
+      return;
+    }
+    state.splitState = {
+      mode: "each_page",
+      everyN: 1,
+      ranges: "",
+      outputs: [],
+      inProgress: false,
+    };
+    els.splitOverlay.style.display = "flex";
+    els.splitResults.style.display = "none";
+    els.splitProgress.style.display = "none";
+    els.splitRanges.value = "";
+    els.splitEveryN.value = "1";
+    els.splitBtnSplit.disabled = true;
+    _updateSplitModeUI();
+    _updateSplitPreview();
+  }
+
+  function _closeSplitWorkspace() {
+    els.splitOverlay.style.display = "none";
+    els.splitResults.style.display = "none";
+    els.splitProgress.style.display = "none";
+    state.splitState = {
+      mode: "each_page",
+      everyN: 1,
+      ranges: "",
+      outputs: [],
+      inProgress: false,
+    };
+  }
+
+  function _updateSplitModeUI() {
+    const mode = state.splitState.mode;
+    els.splitEveryNSection.style.display = mode === "every_n_pages" ? "block" : "none";
+    els.splitRangesSection.style.display = mode === "ranges" ? "block" : "none";
+    els.splitPreviewSection.style.display = mode === "ranges" || mode === "every_n_pages" ? "block" : "none";
+    if (mode === "each_page") {
+      _updateSplitPreview();
+    }
+    _updateSplitButtonState();
+  }
+
+  function _updateSplitPreview() {
+    const mode = state.splitState.mode;
+    const pageCount = state.pageCount;
+    const previewList = els.splitPreviewList;
+    previewList.innerHTML = "";
+
+    if (mode === "each_page") {
+      for (let i = 1; i <= pageCount; i++) {
+        const item = document.createElement("div");
+        item.className = "split-preview-item";
+        item.innerHTML = `<span>Page ${i}</span><span>${i}</span>`;
+        previewList.appendChild(item);
+      }
+      els.splitBtnSplit.disabled = false;
+      return;
+    }
+
+    let ranges;
+    if (mode === "every_n_pages") {
+      const n = state.splitState.everyN;
+      ranges = [];
+      for (let i = 0; i < pageCount; i += n) {
+        ranges.push([i, Math.min(i + n - 1, pageCount - 1)]);
+      }
+    } else if (mode === "ranges") {
+      const text = els.splitRanges.value.trim();
+      if (!text) {
+        els.splitBtnSplit.disabled = true;
+        return;
+      }
+      const parsed = _parsePageRanges(text, pageCount);
+      if (parsed === null) {
+        els.splitBtnSplit.disabled = true;
+        return;
+      }
+      ranges = [];
+      for (let i = 0; i < parsed.length; ) {
+        const start = parsed[i];
+        let end = start;
+        while (i + 1 < parsed.length && parsed[i + 1] === end + 1) {
+          end = parsed[i + 1];
+          i++;
+        }
+        ranges.push([start, end]);
+        i++;
+      }
+    }
+
+    if (!ranges || ranges.length === 0) {
+      els.splitBtnSplit.disabled = true;
+      return;
+    }
+
+    ranges.forEach(([start, end]) => {
+      const pageCount = end - start + 1;
+      const item = document.createElement("div");
+      item.className = "split-preview-item";
+      const start1 = start + 1;
+      const end1 = end + 1;
+      const label = start === end ? `Page ${start1}` : `Pages ${start1}-${end1}`;
+      item.innerHTML = `<span>${label}</span><span>${pageCount}</span>`;
+      previewList.appendChild(item);
+    });
+
+    els.splitBtnSplit.disabled = false;
+  }
+
+  function _updateSplitButtonState() {
+    if (state.splitState.mode === "each_page") {
+      els.splitBtnSplit.disabled = state.pageCount === 0;
+    }
+  }
+
+  async function _executeSplit() {
+    const mode = state.splitState.mode;
+    let ranges = null;
+    let pagesPerFile = null;
+
+    if (mode === "ranges") {
+      const parsed = _parsePageRanges(els.splitRanges.value.trim(), state.pageCount);
+      if (parsed === null || parsed.length === 0) {
+        _showError("Invalid page range format.");
+        return;
+      }
+      ranges = [];
+      for (let i = 0; i < parsed.length; ) {
+        const start = parsed[i];
+        let end = start;
+        while (i + 1 < parsed.length && parsed[i + 1] === end + 1) {
+          end = parsed[i + 1];
+          i++;
+        }
+        ranges.push([start, end]);
+        i++;
+      }
+    } else if (mode === "every_n_pages") {
+      pagesPerFile = state.splitState.everyN;
+    }
+
+    state.splitState.inProgress = true;
+    els.splitProgress.style.display = "block";
+    els.splitProgressFill.style.width = "0%";
+    els.splitProgressMessage.textContent = "Splitting PDF...";
+    _setLoading(true);
+    _hideError();
+
+    try {
+      const result = await API.splitDocument(state.documentId, mode, ranges, pagesPerFile);
+      state.splitState.outputs = result.outputs;
+
+      els.splitProgress.style.display = "none";
+      els.splitResults.style.display = "block";
+      els.splitResultsCount.textContent = `${result.total_files} file${result.total_files !== 1 ? "s" : ""}`;
+
+      els.splitResultsList.innerHTML = "";
+      result.outputs.forEach((out) => {
+        const item = document.createElement("div");
+        item.className = "split-result-item";
+        const start1 = out.page_range[0] + 1;
+        const end1 = out.page_range[1] + 1;
+        const rangeLabel = start1 === end1 ? `Page ${start1}` : `Pages ${start1}-${end1}`;
+        item.innerHTML = `
+          <div class="split-result-info">
+            <div class="split-result-filename">${out.filename}</div>
+            <div class="split-result-details">${out.page_count} page${out.page_count !== 1 ? "s" : ""} &#8226; ${rangeLabel}</div>
+          </div>
+          <div class="split-result-actions">
+            <button type="button" class="split-result-download" data-id="${out.document_id}" title="Download">
+              Download
+            </button>
+          </div>
+        `;
+        els.splitResultsList.appendChild(item);
+      });
+
+      els.splitResultsList.querySelectorAll(".split-result-download").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          const docId = e.currentTarget.getAttribute("data-id");
+          _downloadSplitPdf(docId);
+        });
+      });
+
+      _showSuccess(`Split into ${result.total_files} document${result.total_files !== 1 ? "s" : ""}.`);
+
+    } catch (err) {
+      _showError(err.message || "Failed to split PDF");
+    } finally {
+      _setLoading(false);
+      state.splitState.inProgress = false;
+    }
+  }
+
+  async function _downloadSplitPdf(documentId) {
+    try {
+      await API.downloadPDF(documentId, "split_output.pdf");
+    } catch (err) {
+      _showError(err.message || "Failed to download split PDF");
+    }
+  }
+
+  async function _downloadSplitZip() {
+    const ids = state.splitState.outputs.map((o) => o.document_id);
+    try {
+      await API.downloadSplitZip(ids);
+      _showSuccess("Downloaded all split PDFs as ZIP.");
+    } catch (err) {
+      _showError(err.message || "Failed to download ZIP");
+    }
+  }
+
+  function _closeSplitResults() {
+    els.splitResults.style.display = "none";
+    _closeSplitWorkspace();
+  }
+
+  // UI helpers
 
   // ------------------------------------------------------------------
   // Merge workspace operations

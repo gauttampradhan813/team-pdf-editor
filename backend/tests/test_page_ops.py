@@ -728,3 +728,339 @@ def test_merge_metadata_registered():
     assert meta.status_code == 200
     assert meta.json()["page_count"] == 2
     assert meta.json()["filename"] == "merged.pdf"
+
+
+# -----------------------------------------------------------------------
+# Split
+# -----------------------------------------------------------------------
+
+def test_split_each_page():
+    doc_id = upload_pdf(4, "split_source.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "each_page"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    assert body["source_document_id"] == doc_id
+    assert body["total_files"] == 4
+    assert body["total_pages"] == 4
+
+    # Verify each output has 1 page with correct content.
+    for i, out in enumerate(body["outputs"]):
+        assert out["page_count"] == 1
+        assert out["page_range"] == [i, i]
+        texts = get_page_order_text(out["document_id"])
+        assert texts == [f"Test Doc - page {i + 1}"]
+
+    # Source unchanged.
+    assert get_page_order_text(doc_id) == [
+        "Test Doc - page 1",
+        "Test Doc - page 2",
+        "Test Doc - page 3",
+        "Test Doc - page 4",
+    ]
+
+
+def test_split_every_n_pages():
+    doc_id = upload_pdf(10, "split_every_n.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "every_n_pages", "pages_per_file": 3},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    # 10 pages / 3 per file = 4 files (3, 3, 3, 1)
+    assert body["total_files"] == 4
+    assert body["total_pages"] == 10
+
+    expected_ranges = [[0, 2], [3, 5], [6, 8], [9, 9]]
+    for i, out in enumerate(body["outputs"]):
+        assert out["page_range"] == expected_ranges[i]
+        assert out["page_count"] == expected_ranges[i][1] - expected_ranges[i][0] + 1
+
+        texts = get_page_order_text(out["document_id"])
+        start = expected_ranges[i][0]
+        end = expected_ranges[i][1]
+        assert texts == [f"Test Doc - page {p + 1}" for p in range(start, end + 1)]
+
+    # Source unchanged.
+    assert get_page_order_text(doc_id) == [
+        f"Test Doc - page {i + 1}" for i in range(10)
+    ]
+
+
+def test_split_custom_ranges():
+    doc_id = upload_pdf(8, "split_ranges.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={
+            "mode": "ranges",
+            "ranges": [[0, 2], [4, 4], [5, 7]],
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    assert body["total_files"] == 3
+    assert body["total_pages"] == 7  # pages 0,1,2,4,5,6,7 (page 3 skipped)
+
+    expected_ranges = [[0, 2], [4, 4], [5, 7]]
+    for i, out in enumerate(body["outputs"]):
+        assert out["page_range"] == expected_ranges[i]
+        texts = get_page_order_text(out["document_id"])
+        start = expected_ranges[i][0]
+        end = expected_ranges[i][1]
+        assert texts == [f"Test Doc - page {p + 1}" for p in range(start, end + 1)]
+
+    # Source unchanged.
+    assert get_page_order_text(doc_id) == [
+        f"Test Doc - page {i + 1}" for i in range(8)
+    ]
+
+
+def test_split_single_page_pdf():
+    doc_id = upload_pdf(1, "single_page.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "each_page"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    assert body["total_files"] == 1
+    assert body["total_pages"] == 1
+    assert body["outputs"][0]["page_range"] == [0, 0]
+    assert body["outputs"][0]["page_count"] == 1
+
+    # Source unchanged.
+    assert get_page_order_text(doc_id) == ["Test Doc - page 1"]
+
+
+def test_split_preserves_dimensions():
+    # Create a PDF with a non-default page size
+    import pymupdf
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)  # US Letter
+    page.insert_text((72, 72), "Different size page")
+    data = doc.tobytes()
+    doc.close()
+
+    response = client.post(
+        "/documents",
+        files={"file": ("different_size.pdf", io.BytesIO(data), "application/pdf")},
+    )
+    assert response.status_code == 201
+    doc_id = response.json()["document_id"]
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "each_page"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    # Download the output and verify dimensions
+    out_data = client.get(f"/documents/{body['outputs'][0]['document_id']}/download").content
+    out_doc = pymupdf.open(stream=out_data, filetype="pdf")
+    try:
+        assert out_doc[0].rect.width == 612
+        assert out_doc[0].rect.height == 792
+    finally:
+        out_doc.close()
+
+
+def test_split_preserves_rotation():
+    doc_id = upload_pdf(2, "rotated_split.pdf")
+    # Rotate page 0 by 90 degrees
+    client.post(
+        f"/documents/{doc_id}/pages/rotate",
+        json={"page_numbers": [0], "rotation": 90},
+    )
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "each_page"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    import pikepdf
+    out_data = client.get(f"/documents/{body['outputs'][0]['document_id']}/download").content
+    pdf = pikepdf.open(io.BytesIO(out_data))
+    try:
+        assert int(pdf.pages[0].get("/Rotate", 0)) == 90
+    finally:
+        pdf.close()
+
+
+def test_split_source_unchanged():
+    doc_id = upload_pdf(5, "source_unchanged.pdf")
+    source_before = get_page_order_text(doc_id)
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "ranges", "ranges": [[0, 1], [3, 4]]},
+    )
+    assert response.status_code == 201, response.text
+
+    assert get_page_order_text(doc_id) == source_before
+
+
+def test_split_invalid_range_out_of_bounds():
+    doc_id = upload_pdf(5, "oob.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "ranges", "ranges": [[0, 10]]},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_split_invalid_range_start_greater_than_end():
+    doc_id = upload_pdf(5, "invalid_range.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "ranges", "ranges": [[3, 1]]},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_split_overlapping_ranges():
+    doc_id = upload_pdf(5, "overlap.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "ranges", "ranges": [[0, 2], [2, 4]]},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_split_empty_ranges():
+    doc_id = upload_pdf(5, "empty_ranges.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "ranges", "ranges": []},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_split_invalid_pages_per_file():
+    doc_id = upload_pdf(5, "invalid_n.pdf")
+
+    # Zero pages_per_file
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "every_n_pages", "pages_per_file": 0},
+    )
+    assert response.status_code == 422, response.text
+
+    # Negative pages_per_file
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "every_n_pages", "pages_per_file": -1},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_split_invalid_mode():
+    doc_id = upload_pdf(3, "invalid_mode.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "invalid_mode"},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_split_nonexistent_document():
+    response = client.post(
+        "/documents/nonexistent-id/split",
+        json={"mode": "each_page"},
+    )
+    assert response.status_code == 404, response.text
+
+
+def test_split_download_integrity():
+    doc_id = upload_pdf(4, "split_download.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "each_page"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    # Download each output and verify
+    for out in body["outputs"]:
+        data = client.get(f"/documents/{out['document_id']}/download")
+        assert data.status_code == 200
+        assert data.content.startswith(b"%PDF-")
+
+        import pymupdf
+        out_doc = pymupdf.open(stream=data.content, filetype="pdf")
+        try:
+            assert out_doc.page_count == out["page_count"]
+            start = out["page_range"][0]
+            assert out_doc[0].get_text().strip() == f"Test Doc - page {start + 1}"
+        finally:
+            out_doc.close()
+
+
+def test_split_zip_download():
+    doc_id = upload_pdf(4, "split_zip.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/split",
+        json={"mode": "each_page"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    output_ids = [o["document_id"] for o in body["outputs"]]
+    ids_param = ",".join(output_ids)
+
+    response = client.get(
+        f"/documents/split/download?document_ids={ids_param}",
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "application/zip"
+    assert response.content.startswith(b"PK")  # ZIP magic bytes
+
+    import zipfile
+    import io
+    zip_data = zipfile.ZipFile(io.BytesIO(response.content))
+    names = zip_data.namelist()
+    assert len(names) == 4
+
+    # Verify each PDF in the ZIP is valid
+    import pymupdf
+    for name in names:
+        pdf_data = zip_data.read(name)
+        pdf_doc = pymupdf.open(stream=pdf_data, filetype="pdf")
+        try:
+            assert pdf_doc.page_count == 1
+        finally:
+            pdf_doc.close()
+
+
+def test_split_zip_missing_document():
+    response = client.get(
+        "/documents/split/download?document_ids=nonexistent-id",
+    )
+    assert response.status_code == 404, response.text
+
+
+def test_split_zip_empty_ids():
+    response = client.get(
+        "/documents/split/download?document_ids=",
+    )
+    assert response.status_code == 400, response.text

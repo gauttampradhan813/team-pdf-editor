@@ -893,6 +893,266 @@ class DocumentStorage:
             out_pdf.save(buf)
             return buf.getvalue()
 
+    # ------------------------------------------------------------------
+    # Split a single document into multiple documents
+    # ------------------------------------------------------------------
+
+    def split_document(
+        self,
+        document_id: str,
+        mode: str,
+        ranges: list[list[int]] | None = None,
+        pages_per_file: int | None = None,
+    ) -> dict:
+        """Split a document into multiple new documents.
+
+        Supports three modes:
+        - ``ranges``: extract custom zero-based inclusive page ranges
+          (e.g. ``[[0, 2], [4, 4], [6, 9]]``).
+        - ``every_n_pages``: split every ``pages_per_file`` pages.
+        - ``each_page``: one output page per input page.
+
+        Args:
+            document_id: Source document to split.
+            mode: Splitting mode: ``ranges``, ``every_n_pages``, ``each_page``.
+            ranges: List of [start, end] zero-based inclusive ranges
+              (required for ``ranges`` mode).
+            pages_per_file: Number of pages per output
+              (required for ``every_n_pages`` mode).
+
+        Returns:
+            A dict with ``source_document_id``, ``total_files``,
+            ``total_pages``, and ``outputs`` (a list of dicts with
+            document_id, filename, page_count, file_size, page_range).
+
+        Raises:
+            DocumentNotFoundError: Source document not found.
+            ValueError: Invalid mode, ranges, or parameters.
+            StorageError: Filesystem operation or validation failed.
+        """
+        if mode not in ("ranges", "every_n_pages", "each_page"):
+            raise ValueError(
+                f"Invalid split mode: {mode!r}. "
+                "Use 'ranges', 'every_n_pages', or 'each_page'."
+            )
+
+        with self._lock:
+            self._validate_document_id(document_id)
+            record = self._documents.get(document_id)
+            if record is None:
+                # Try hydration from disk.
+                metadata_path = self._metadata_path(document_id)
+                if metadata_path.exists():
+                    try:
+                        data = json.loads(
+                            metadata_path.read_text(encoding="utf-8")
+                        )
+                        record = DocumentRecord(**data)
+                        self._documents[document_id] = record
+                    except (json.JSONDecodeError, TypeError, OSError):
+                        record = None
+                if record is None:
+                    raise DocumentNotFoundError(
+                        f"Document not found: {document_id}"
+                    )
+
+            page_count = record.page_count
+            src_path = self._pdf_path(document_id)
+            if not src_path.exists():
+                raise DocumentNotFoundError(
+                    f"Document file missing: {document_id}"
+                )
+
+            # --- Compute page ranges based on mode ---
+            computed_ranges: list[list[int]] = []
+
+            if mode == "each_page":
+                computed_ranges = [[i, i] for i in range(page_count)]
+            elif mode == "every_n_pages":
+                if not pages_per_file or pages_per_file < 1:
+                    raise ValueError(
+                        "pages_per_file must be a positive integer."
+                    )
+                start = 0
+                while start < page_count:
+                    end = min(start + pages_per_file - 1, page_count - 1)
+                    computed_ranges.append([start, end])
+                    start = end + 1
+            elif mode == "ranges":
+                if not ranges:
+                    raise ValueError(
+                        "ranges must be provided for 'ranges' mode."
+                    )
+                # Validate and normalize ranges.
+                seen_pages: set[int] = set()
+                for r in ranges:
+                    if (
+                        not isinstance(r, list)
+                        or len(r) != 2
+                        or not all(isinstance(x, int) for x in r)
+                    ):
+                        raise ValueError(
+                            f"Invalid range: {r!r}. "
+                            "Each range must be [start, end] integers."
+                        )
+                    start, end = r
+                    if start < 0 or end >= page_count:
+                        raise ValueError(
+                            f"Range [{start}, {end}] out of bounds "
+                            f"(0-{page_count - 1})."
+                        )
+                    if start > end:
+                        raise ValueError(
+                            f"Range start {start} > end {end}."
+                        )
+                    for p in range(start, end + 1):
+                        if p in seen_pages:
+                            raise ValueError(
+                                f"Page {p} appears in multiple ranges."
+                            )
+                        seen_pages.add(p)
+                    computed_ranges.append([start, end])
+
+            if not computed_ranges:
+                raise ValueError("No pages to split.")
+
+            # --- Build each output PDF outside the lock ---
+            outputs: list[dict] = []
+            source_name = record.filename or "document.pdf"
+            base = (
+                source_name[:-4]
+                if source_name.lower().endswith(".pdf")
+                else source_name
+            )
+
+        # Build outputs (CPU-bound, outside lock).
+        try:
+            for idx, (start, end) in enumerate(computed_ranges):
+                out_bytes = self._split_pdf_file(
+                    src_path, start, end
+                )
+
+                # Validate output by reopening.
+                try:
+                    import pymupdf
+
+                    with pymupdf.open(
+                        stream=out_bytes, filetype="pdf"
+                    ) as validate_doc:
+                        out_page_count = validate_doc.page_count
+                except Exception as exc:
+                    raise StorageError(
+                        f"Output validation failed for range "
+                        f"[{start}, {end}]: {exc}"
+                    ) from exc
+
+                if out_page_count != (end - start + 1):
+                    raise StorageError(
+                        f"Output page count mismatch for range "
+                        f"[{start}, {end}]: expected "
+                        f"{end - start + 1}, got {out_page_count}."
+                    )
+
+                outputs.append(
+                    {
+                        "start": start,
+                        "end": end,
+                        "bytes": out_bytes,
+                        "page_count": out_page_count,
+                    }
+                )
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError(f"Failed to split document: {exc}") from exc
+
+        # --- Register each output as a new document ---
+        total_pages = sum(o["page_count"] for o in outputs)
+        output_records: list[dict] = []
+
+        with self._lock:
+            for i, out in enumerate(outputs, start=1):
+                split_filename = f"{base}_split_{i}.pdf"
+                try:
+                    new_record = self.store(
+                        filename=split_filename,
+                        data=out["bytes"],
+                        page_count=out["page_count"],
+                        metadata=dict(record.metadata),
+                    )
+                except StorageError:
+                    raise
+
+                output_records.append(
+                    {
+                        "document_id": new_record.document_id,
+                        "filename": new_record.filename,
+                        "page_count": new_record.page_count,
+                        "file_size": new_record.size,
+                        "page_range": [out["start"], out["end"]],
+                    }
+                )
+
+        return {
+            "source_document_id": document_id,
+            "total_files": len(output_records),
+            "total_pages": total_pages,
+            "outputs": output_records,
+        }
+
+    @staticmethod
+    def _split_pdf_file(
+        src_path: Path,
+        start_page: int,
+        end_page: int,
+    ) -> bytes:
+        """Extract pages ``start_page`` through ``end_page`` (inclusive,
+        zero-based) from ``src_path`` and return the new PDF bytes."""
+        import pikepdf
+        import io
+
+        with pikepdf.open(src_path) as pdf:
+            pages = list(pdf.pages)
+            with pikepdf.new() as out_pdf:
+                for idx in range(start_page, end_page + 1):
+                    out_pdf.pages.append(pages[idx])
+                buf = io.BytesIO()
+                out_pdf.save(buf)
+                return buf.getvalue()
+
+    def create_split_zip(
+        self,
+        document_ids: list[str],
+    ) -> bytes:
+        """Create a ZIP archive containing the PDFs for the given document
+        IDs.
+
+        Args:
+            document_ids: Ordered list of document IDs to include.
+
+        Returns:
+            ZIP archive bytes.
+
+        Raises:
+            DocumentNotFoundError: Any document ID does not exist.
+            StorageError: ZIP creation failed.
+        """
+        import zipfile
+
+        buf = io.BytesIO()
+        try:
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for doc_id in document_ids:
+                    record = self.get(doc_id)
+                    pdf_bytes = self.pdf_bytes(doc_id)
+                    zf.writestr(record.filename, pdf_bytes)
+        except DocumentNotFoundError:
+            raise
+        except Exception as exc:
+            raise StorageError(f"Failed to create ZIP: {exc}") from exc
+
+        return buf.getvalue()
+
 
 # ------------------------------------------------------------------
 # Shared singleton instance used by all API routers.

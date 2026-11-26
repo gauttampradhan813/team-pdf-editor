@@ -240,6 +240,56 @@ const API = (() => {
     return response;
   }
 
+  /**
+   * Split a document into multiple PDFs.
+   * @param {string} documentId
+   * @param {string} mode - 'ranges', 'every_n_pages', or 'each_page'.
+   * @param {number[]|null} ranges - Zero-based [start, end] pairs for 'ranges'.
+   * @param {number|null} pagesPerFile - Pages per output for 'every_n_pages'.
+   * @returns {Promise<{source_document_id, total_files, total_pages, outputs[]}>}
+   */
+  async function splitDocument(documentId, mode, ranges = null, pagesPerFile = null) {
+    const response = await _request("POST", `/documents/${encodeURIComponent(documentId)}/split`, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: mode,
+        ranges: ranges,
+        pages_per_file: pagesPerFile,
+      }),
+    });
+    return response;
+  }
+
+  /**
+   * Download split outputs as a ZIP archive.
+   * @param {string[]} documentIds - Ordered list of document IDs.
+   */
+  async function downloadSplitZip(documentIds) {
+    const idsParam = documentIds.join(",");
+    const response = await fetch(`/documents/split/download?document_ids=${idsParam}`);
+    if (!response.ok) {
+      let message = `Download failed (${response.status})`;
+      try {
+        const json = await response.json();
+        if (json && json.error && json.error.message) {
+          message = json.error.message;
+        }
+      } catch (_) { /* ignore */ }
+      const err = new Error(message);
+      err.status = response.status;
+      throw err;
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "split_outputs.zip";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   return {
     uploadPDF,
     getDocument,
@@ -252,5 +302,7 @@ const API = (() => {
     extractPages,
     duplicatePages,
     mergeDocuments,
+    splitDocument,
+    downloadSplitZip,
   };
 })();
