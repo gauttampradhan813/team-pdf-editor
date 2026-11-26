@@ -1,0 +1,35 @@
+@'
+# --- Virtual environment ---
+.venv/
+venv/
+env/
+
+# --- Tool artifacts ---
+.brud/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Environment & secrets ---
+.env
+.env.local
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# --- Generated / temporary files ---
+logs/
+*.log
+*.tmp
+~$*
+'@ | Set-Content -Path .gitignore -Encoding utf8

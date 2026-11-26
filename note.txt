@@ -1,0 +1,6 @@
+for starting the local environment 
+ .\.venv\Scripts\Activate.ps1        
+ as then only the work can be done
+
+ $env:Path += ";D:\Gautam\Git\cmd"
+git status --short

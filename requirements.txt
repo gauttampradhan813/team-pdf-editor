@@ -1,0 +1,22 @@
+# ---------------------------------------------------------------
+# TeamPDF Studio - direct runtime dependencies
+# Verified against .venv (Python 3.11.0)
+# ---------------------------------------------------------------
+
+# --- Web framework ---
+fastapi==0.165.0
+uvicorn[standard]==0.54.0
+python-multipart==0.0.34
+python-dotenv==1.2.4
+pydantic-settings==2.16.3
+
+# --- PDF ---
+PyMuPDF==2.2
+pikepdf==10.18.2
+
+# --- Imaging ---
+Pillow==13.0.0
+opencv-python==5.1.0.95
+
+# --- Fonts ---
+fonttools==4.69.1
