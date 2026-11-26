@@ -1064,3 +1064,288 @@ def test_split_zip_empty_ids():
         "/documents/split/download?document_ids=",
     )
     assert response.status_code == 400, response.text
+
+
+# -----------------------------------------------------------------------
+# Compress
+# -----------------------------------------------------------------------
+
+def test_compress_low_level():
+    doc_id = upload_pdf(3, "compress_low.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "low"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    assert body["source_document_id"] == doc_id
+    assert body["level"] == "low"
+    assert body["page_count"] == 3
+    assert body["status"] in ("compressed", "increased")
+    assert "new_document_id" in body
+    assert body["new_document_id"] != doc_id
+
+    # Verify output PDF opens and has correct pages
+    texts = get_page_order_text(body["new_document_id"])
+    assert texts == [
+        "Test Doc - page 1",
+        "Test Doc - page 2",
+        "Test Doc - page 3",
+    ]
+
+    # Source unchanged
+    assert get_page_order_text(doc_id) == [
+        "Test Doc - page 1",
+        "Test Doc - page 2",
+        "Test Doc - page 3",
+    ]
+
+
+def test_compress_medium_level():
+    doc_id = upload_pdf(3, "compress_medium.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "medium"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    assert body["source_document_id"] == doc_id
+    assert body["level"] == "medium"
+    assert body["page_count"] == 3
+
+    texts = get_page_order_text(body["new_document_id"])
+    assert texts == [
+        "Test Doc - page 1",
+        "Test Doc - page 2",
+        "Test Doc - page 3",
+    ]
+
+
+def test_compress_high_level():
+    doc_id = upload_pdf(3, "compress_high.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "high"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    assert body["source_document_id"] == doc_id
+    assert body["level"] == "high"
+    assert body["page_count"] == 3
+
+    texts = get_page_order_text(body["new_document_id"])
+    assert texts == [
+        "Test Doc - page 1",
+        "Test Doc - page 2",
+        "Test Doc - page 3",
+    ]
+
+
+def test_compress_custom_settings():
+    doc_id = upload_pdf(3, "compress_custom.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={
+            "level": "high",
+            "jpeg_quality": 70,
+            "max_image_dpi": 150,
+            "downsample_images": True,
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["level"] == "high"
+    assert body["page_count"] == 3
+
+
+def test_compress_invalid_level():
+    doc_id = upload_pdf(3, "compress_bad.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "invalid"},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_compress_invalid_quality():
+    doc_id = upload_pdf(3, "compress_bad_q.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "medium", "jpeg_quality": 150},
+    )
+    assert response.status_code == 422, response.text
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "medium", "jpeg_quality": 0},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_compress_nonexistent_document():
+    response = client.post(
+        "/documents/nonexistent-id/compress",
+        json={"level": "medium"},
+    )
+    assert response.status_code == 404, response.text
+
+
+def test_compress_preserves_text():
+    doc_id = upload_pdf(3, "compress_text.pdf")
+
+    source_texts = get_page_order_text(doc_id)
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "high"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    compressed_texts = get_page_order_text(body["new_document_id"])
+    assert compressed_texts == source_texts
+
+
+def test_compress_preserves_page_count():
+    doc_id = upload_pdf(5, "compress_count.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "medium"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["page_count"] == 5
+
+
+def test_compress_preserves_dimensions():
+    import pymupdf
+
+    # Create a PDF with non-default page size
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)  # US Letter
+    page.insert_text((72, 72), "Custom size")
+    data = doc.tobytes()
+    doc.close()
+
+    response = client.post(
+        "/documents",
+        files={"file": ("custom_size.pdf", io.BytesIO(data), "application/pdf")},
+    )
+    assert response.status_code == 201
+    doc_id = response.json()["document_id"]
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "medium"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    compressed_data = client.get(
+        f"/documents/{body['new_document_id']}/download"
+    ).content
+    compressed_doc = pymupdf.open(stream=compressed_data, filetype="pdf")
+    try:
+        assert compressed_doc[0].rect.width == 612
+        assert compressed_doc[0].rect.height == 792
+    finally:
+        compressed_doc.close()
+
+
+def test_compress_preserves_rotation():
+    doc_id = upload_pdf(1, "compress_rotate.pdf")
+    client.post(
+        f"/documents/{doc_id}/pages/rotate",
+        json={"page_numbers": [0], "rotation": 90},
+    )
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "medium"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    import pikepdf
+    compressed_data = client.get(
+        f"/documents/{body['new_document_id']}/download"
+    ).content
+    pdf = pikepdf.open(io.BytesIO(compressed_data))
+    try:
+        assert int(pdf.pages[0].get("/Rotate", 0)) == 90
+    finally:
+        pdf.close()
+
+
+def test_compress_source_unchanged():
+    doc_id = upload_pdf(3, "compress_src.pdf")
+    source_texts = get_page_order_text(doc_id)
+    source_size = client.get(f"/documents/{doc_id}/download").content
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "high"},
+    )
+    assert response.status_code == 201, response.text
+
+    assert get_page_order_text(doc_id) == source_texts
+    assert client.get(f"/documents/{doc_id}/download").content == source_size
+
+
+def test_compress_returns_signed_reduction():
+    doc_id = upload_pdf(3, "compress_reduction.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "low"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    assert "original_size" in body
+    assert "compressed_size" in body
+    assert "bytes_saved" in body
+    assert "reduction_percent" in body
+    assert isinstance(body["reduction_percent"], (int, float))
+
+
+def test_compress_large_pdf():
+    doc_id = upload_pdf(20, "compress_large.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "medium"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["page_count"] == 20
+
+
+def test_compress_returns_warnings_list():
+    doc_id = upload_pdf(1, "compress_warn.pdf")
+
+    response = client.post(
+        f"/documents/{doc_id}/compress",
+        json={"level": "medium"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert "warnings" in body
+    assert isinstance(body["warnings"], list)
+
+
+def test_split_zip_empty_ids():
+    response = client.get(
+        "/documents/split/download?document_ids=",
+    )
+    assert response.status_code == 400, response.text

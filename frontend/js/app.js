@@ -76,6 +76,24 @@ const App = (() => {
     splitEveryNSection: document.getElementById("split-every-n-section"),
     splitRangesSection: document.getElementById("split-ranges-section"),
     splitPreviewSection: document.getElementById("split-preview-section"),
+    // Compress workspace refs
+    btnCompress: document.getElementById("btn-compress"),
+    compressOverlay: document.getElementById("compress-overlay"),
+    compressClose: document.getElementById("compress-close"),
+    compressBtnCompress: document.getElementById("compress-btn-compress"),
+    compressProgress: document.getElementById("compress-progress"),
+    compressProgressMessage: document.getElementById("compress-progress-message"),
+    compressProgressFill: document.getElementById("compress-progress-fill"),
+    compressResults: document.getElementById("compress-results"),
+    compressResultFilename: document.getElementById("compress-result-filename"),
+    compressResultDetails: document.getElementById("compress-result-details"),
+    compressSizeOriginal: document.getElementById("compress-size-original"),
+    compressSizeCompressed: document.getElementById("compress-size-compressed"),
+    compressSizeSaved: document.getElementById("compress-size-saved"),
+    compressSizeReduction: document.getElementById("compress-size-reduction"),
+    compressBtnDownload: document.getElementById("compress-btn-download"),
+    compressBtnOpen: document.getElementById("compress-btn-open"),
+    compressBtnCloseResults: document.getElementById("compress-btn-close-results"),
     // Toolbar refs
     btnPrev: document.getElementById("btn-prev"),
     btnNext: document.getElementById("btn-next"),
@@ -107,6 +125,14 @@ const App = (() => {
       mode: "each_page",
       everyN: 1,
       ranges: "",
+      outputs: [],
+      inProgress: false,
+    },
+    compressState: {
+      level: "medium",
+      jpegQuality: null,
+      maxImageDpi: null,
+      downsampleImages: null,
       outputs: [],
       inProgress: false,
     },
@@ -331,6 +357,14 @@ const App = (() => {
     // Split results actions
     els.splitBtnDownloadAll.addEventListener("click", _downloadSplitZip);
     els.splitBtnCloseResults.addEventListener("click", _closeSplitResults);
+
+    // Compress workspace events
+    els.btnCompress.addEventListener("click", _openCompressWorkspace);
+    els.compressClose.addEventListener("click", _closeCompressWorkspace);
+    els.compressBtnCompress.addEventListener("click", _executeCompress);
+    els.compressBtnDownload.addEventListener("click", _downloadCompressedPdf);
+    els.compressBtnOpen.addEventListener("click", _openCompressedInViewer);
+    els.compressBtnCloseResults.addEventListener("click", _closeCompressResults);
   }
 
   // ------------------------------------------------------------------
@@ -931,6 +965,133 @@ const App = (() => {
   function _closeSplitResults() {
     els.splitResults.style.display = "none";
     _closeSplitWorkspace();
+  }
+
+  // ------------------------------------------------------------------
+  // Compress workspace operations
+  // ------------------------------------------------------------------
+
+  function _openCompressWorkspace() {
+    if (!state.documentId) {
+      _showError("No document loaded. Open a PDF first.");
+      return;
+    }
+    state.compressState = {
+      level: "medium",
+      jpegQuality: null,
+      maxImageDpi: null,
+      downsampleImages: null,
+      outputs: [],
+      inProgress: false,
+    };
+    els.compressOverlay.style.display = "flex";
+    els.compressResults.style.display = "none";
+    els.compressProgress.style.display = "none";
+    els.compressBtnCompress.disabled = false;
+    _updateCompressModeUI();
+  }
+
+  function _closeCompressWorkspace() {
+    els.compressOverlay.style.display = "none";
+    els.compressResults.style.display = "none";
+    els.compressProgress.style.display = "none";
+    state.compressState = {
+      level: "medium",
+      jpegQuality: null,
+      maxImageDpi: null,
+      downsampleImages: null,
+      outputs: [],
+      inProgress: false,
+    };
+  }
+
+  function _updateCompressModeUI() {
+    const mode = state.compressState.level;
+    const hints = {
+      low: "Best quality with minimal size reduction. Preserves images at original quality.",
+      medium: "Good size reduction while maintaining visual quality.",
+      high: "Maximum compression with acceptable visual trade-offs.",
+    };
+    els.compressHint.textContent = hints[mode] || hints.medium;
+  }
+
+  async function _executeCompress() {
+    const level = state.compressState.level;
+    state.compressState.inProgress = true;
+    els.compressProgress.style.display = "block";
+    els.compressProgressFill.style.width = "0%";
+    els.compressProgressMessage.textContent = "Compressing PDF...";
+    _setLoading(true);
+    _hideError();
+
+    try {
+      const result = await API.compressDocument(
+        state.documentId,
+        level,
+        state.compressState.jpegQuality,
+        state.compressState.maxImageDpi,
+        state.compressState.downsampleImages
+      );
+      state.compressState.outputs = [result];
+
+      els.compressProgress.style.display = "none";
+      els.compressResults.style.display = "block";
+
+      // Show results
+      els.compressResultFilename.textContent = result.filename;
+      els.compressResultDetails.textContent = `${result.level} level — ${result.page_count} page${result.page_count !== 1 ? "s" : ""}`;
+      els.compressSizeOriginal.textContent = formatBytes(result.original_size);
+      els.compressSizeCompressed.textContent = formatBytes(result.compressed_size);
+      els.compressSizeSaved.textContent = formatBytes(result.bytes_saved);
+      els.compressSizeReduction.textContent = `${result.reduction_percent}%`;
+
+      _showSuccess(`Compressed ${result.original_filename} — ${result.reduction_percent}% reduction.`);
+
+    } catch (err) {
+      _showError(err.message || "Failed to compress PDF");
+    } finally {
+      _setLoading(false);
+      state.compressState.inProgress = false;
+    }
+  }
+
+  async function _downloadCompressedPdf() {
+    const docId = state.compressState.outputs[0]?.document_id;
+    if (!docId) return;
+    try {
+      await API.downloadPDF(docId, "compressed.pdf");
+    } catch (err) {
+      _showError(err.message || "Failed to download compressed PDF");
+    }
+  }
+
+  async function _openCompressedInViewer() {
+    const docId = state.compressState.outputs[0]?.document_id;
+    if (!docId) return;
+    _closeCompressWorkspace();
+    state.documentId = docId;
+    state.filename = state.compressState.outputs[0].filename;
+    state.pageCount = state.compressState.outputs[0].page_count || 0;
+    state.currentPage = 1;
+
+    els.navFilename.textContent = state.filename;
+    els.navFilename.title = state.filename;
+    els.navStatus.textContent = "Document loaded";
+    els.btnDownload.disabled = false;
+
+    _showViewer();
+    Viewer.loadDocument(state.documentId, state.pageCount);
+    Thumbnails.loadDocument(state.documentId, state.pageCount);
+    Toolbar.updatePagination(state.currentPage, state.pageCount);
+    Toolbar.updateZoom(Viewer.getZoomPercent(), Viewer.getState().fitMode);
+  }
+
+  function formatBytes(bytes) {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   }
 
   // UI helpers

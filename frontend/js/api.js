@@ -290,6 +290,34 @@ const API = (() => {
     URL.revokeObjectURL(url);
   }
 
+  /**
+   * Compress a PDF document.
+   * @param {string} documentId
+   * @param {string} level - 'low', 'medium', or 'high'.
+   * @param {number|null} jpeg_quality - JPEG quality 1-100.
+   * @param {number|null} max_image_dpi - Max image DPI.
+   * @param {boolean|null} downsample_images - Whether to downsample.
+   * @returns {Promise<{source_document_id, new_document_id, filename,
+   *   original_filename, original_size, compressed_size, bytes_saved,
+   *   reduction_percent, page_count, level, status, warnings}>}
+   */
+  async function compressDocument(documentId, level, jpeg_quality = null,
+                                  max_image_dpi = null,
+                                  downsample_images = null) {
+    const response = await _request("POST",
+      `/documents/${encodeURIComponent(documentId)}/compress`,
+      {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          level,
+          jpeg_quality,
+          max_image_dpi,
+          downsample_images,
+        }),
+      });
+    return response;
+  }
+
   return {
     uploadPDF,
     getDocument,
@@ -304,5 +332,6 @@ const API = (() => {
     mergeDocuments,
     splitDocument,
     downloadSplitZip,
+    compressDocument,
   };
 })();

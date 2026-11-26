@@ -67,6 +67,17 @@
           <span class="btn-icon">&#128423;</span>
           <span class="btn-label">Split</span>
         </button>
+
+        <button
+          type="button"
+          class="nav-btn btn-compress"
+          id="btn-compress"
+          title="Compress PDF"
+          aria-label="Compress PDF"
+        >
+          <span class="btn-icon">&#128469;</span>
+          <span class="btn-label">Compress</span>
+        </button>
       </div>
 
       <div class="nav-status" id="nav-status">Ready</div>
@@ -458,6 +469,97 @@
                 Download All as ZIP
               </button>
               <button type="button" class="split-btn split-btn-close-results" id="split-btn-close-results">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Compress workspace overlay -->
+    <div class="compress-overlay" id="compress-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="compress-title">
+      <div class="compress-backdrop"></div>
+      <div class="compress-panel">
+        <div class="compress-header">
+          <h3 id="compress-title">Compress PDF</h3>
+          <button type="button" class="compress-close" id="compress-close" aria-label="Close compress workspace">&#215;</button>
+        </div>
+
+        <div class="compress-body">
+          <div class="compress-instructions">
+            Compress your PDF to reduce file size while preserving quality. Choose a compression level below.
+          </div>
+
+          <div class="compress-mode-section">
+            <label class="compress-mode-label">Compression level</label>
+            <div class="compress-mode-options">
+              <label class="compress-mode-option">
+                <input type="radio" name="compress-level" value="low" />
+                <span>Low — Best quality (minimal size reduction)</span>
+              </label>
+              <label class="compress-mode-option">
+                <input type="radio" name="compress-level" value="medium" checked />
+                <span>Medium — Balanced (good size reduction)</span>
+              </label>
+              <label class="compress-mode-option">
+                <input type="radio" name="compress-level" value="high" />
+                <span>High — Maximum compression (smallest size)</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="compress-hint" id="compress-hint">
+            Balances file size reduction with visual quality.
+          </div>
+
+          <div class="compress-actions">
+            <button type="button" class="compress-btn compress-btn-compress" id="compress-btn-compress" disabled>
+              Compress PDF
+            </button>
+          </div>
+
+          <!-- Compress progress -->
+          <div class="compress-progress" id="compress-progress" style="display:none;">
+            <div class="compress-progress-message" id="compress-progress-message">Compressing PDF...</div>
+            <div class="compress-progress-bar">
+              <div class="compress-progress-fill" id="compress-progress-fill"></div>
+            </div>
+          </div>
+
+          <!-- Compress results -->
+          <div class="compress-results" id="compress-results" style="display:none;">
+            <div class="compress-results-header">
+              <h4>Compression Results</h4>
+            </div>
+            <div class="compress-result-item">
+              <div class="compress-result-filename" id="compress-result-filename"></div>
+              <div class="compress-result-details" id="compress-result-details"></div>
+            </div>
+            <div class="compress-result-size">
+              <span class="compress-size-label">Original size:</span>
+              <span class="compress-size-value" id="compress-size-original"></span>
+            </div>
+            <div class="compress-result-size">
+              <span class="compress-size-label">Compressed size:</span>
+              <span class="compress-size-value" id="compress-size-compressed"></span>
+            </div>
+            <div class="compress-result-size">
+              <span class="compress-size-label">Saved:</span>
+              <span class="compress-size-value" id="compress-size-saved"></span>
+            </div>
+            <div class="compress-result-size">
+              <span class="compress-size-label">Reduction:</span>
+              <span class="compress-size-value" id="compress-size-reduction"></span>
+            </div>
+            <div class="compress-results-actions">
+              <button type="button" class="compress-btn compress-btn-download" id="compress-btn-download">
+                Download Compressed PDF
+              </button>
+              <button type="button" class="compress-btn compress-btn-open" id="compress-btn-open">
+                Open in Viewer
+              </button>
+              <button type="button" class="compress-btn compress-btn-close-results" id="compress-btn-close-results">
                 Close
               </button>
             </div>

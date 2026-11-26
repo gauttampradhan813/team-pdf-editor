@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api import documents, health, merge_ops, page_ops, pages, split_ops
+from app.api import documents, health, merge_ops, page_ops, pages, split_ops, compress_ops
 
 api_router = APIRouter()
 
@@ -21,3 +21,4 @@ api_router.include_router(documents.router)
 api_router.include_router(pages.router)
 api_router.include_router(page_ops.router)
 api_router.include_router(merge_ops.router)
+api_router.include_router(compress_ops.router)

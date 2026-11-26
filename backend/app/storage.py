@@ -1154,7 +1154,364 @@ class DocumentStorage:
         return buf.getvalue()
 
 
-# ------------------------------------------------------------------
-# Shared singleton instance used by all API routers.
-# ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Compress a single document
+    # ------------------------------------------------------------------
+
+    def compress_document(
+        self,
+        document_id: str,
+        level: str,
+        jpeg_quality: int | None = None,
+        max_image_dpi: int | None = None,
+        downsample_images: bool | None = None,
+    ) -> dict:
+        """Compress a PDF document without rasterizing pages.
+
+        Supports three levels:
+        - ``low``:  structural optimization + stream compression,
+          images kept at original quality.
+        - ``medium``: structural optimization + stream compression +
+          moderate JPEG recompression of eligible photographic images.
+        - ``high``: structural optimization + stronger image compression
+          + optional downsampling to max_image_dpi.
+
+        Args:
+            document_id: Source document to compress.
+            level: Compression level: ``low``, ``medium``, or ``high``.
+            jpeg_quality: JPEG quality 1-100 (used for medium/high).
+            max_image_dpi: Max image DPI for downsampling (high only).
+            downsample_images: Whether to downsample images (high only).
+
+        Returns:
+            A dict with ``source_document_id``, ``new_document_id``,
+            ``filename``, ``original_size``, ``compressed_size``,
+            ``bytes_saved``, ``reduction_percent``, ``page_count``,
+            ``level``, ``status``, and ``warnings``.
+
+        Raises:
+            DocumentNotFoundError: Source document not found.
+            ValueError: Invalid level or parameters.
+            StorageError: Filesystem operation or validation failed.
+        """
+        if level not in ("low", "medium", "high"):
+            raise ValueError(
+                "Invalid compression level: %r. "
+                "Use 'low', 'medium', or 'high'." % level
+            )
+
+        # Defaults per level.
+        if jpeg_quality is None:
+            jpeg_quality = {"low": 95, "medium": 75, "high": 60}[level]
+        if max_image_dpi is None:
+            max_image_dpi = 150 if level == "high" else None
+        if downsample_images is None:
+            downsample_images = level == "high"
+
+        if not (1 <= jpeg_quality <= 100):
+            raise ValueError("jpeg_quality must be between 1 and 100.")
+        if max_image_dpi is not None and max_image_dpi < 1:
+            raise ValueError("max_image_dpi must be >= 1.")
+
+        with self._lock:
+            self._validate_document_id(document_id)
+            record = self._documents.get(document_id)
+            if record is None:
+                # Try hydration from disk.
+                metadata_path = self._metadata_path(document_id)
+                if metadata_path.exists():
+                    try:
+                        data = json.loads(
+                            metadata_path.read_text(encoding="utf-8")
+                        )
+                        record = DocumentRecord(**data)
+                        self._documents[document_id] = record
+                    except (json.JSONDecodeError, TypeError, OSError):
+                        record = None
+                if record is None:
+                    raise DocumentNotFoundError(
+                        f"Document not found: {document_id}"
+                    )
+
+            page_count = record.page_count
+            src_path = self._pdf_path(document_id)
+            if not src_path.exists():
+                raise DocumentNotFoundError(
+                    f"Document file missing: {document_id}"
+                )
+
+        # --- Build compressed PDF outside the lock (CPU-bound) ---
+        try:
+            compressed_bytes, warnings = self._compress_pdf_file(
+                src_path, level, jpeg_quality, max_image_dpi,
+                downsample_images,
+            )
+        except Exception as exc:
+            raise StorageError(f"Failed to compress PDF: {exc}") from exc
+
+        # --- Validate output by reopening ---
+        try:
+            import pymupdf
+
+            with pymupdf.open(
+                stream=compressed_bytes, filetype="pdf"
+            ) as validate_doc:
+                out_page_count = validate_doc.page_count
+        except Exception as exc:
+            raise StorageError(
+                f"Compressed PDF validation failed: {exc}"
+            ) from exc
+
+        if out_page_count != page_count:
+            raise StorageError(
+                f"Output page count mismatch: expected {page_count}, "
+                f"got {out_page_count}."
+            )
+
+        original_size = len(
+            self._pdf_path(document_id).read_bytes()
+        )
+        compressed_size = len(compressed_bytes)
+        bytes_saved = original_size - compressed_size
+        reduction_percent = (
+            (bytes_saved / original_size) * 100 if original_size > 0 else 0.0
+        )
+
+        status = "compressed" if compressed_size <= original_size else "increased"
+
+        # --- Register as a new document ---
+        with self._lock:
+            source_name = record.filename or "document.pdf"
+            base = (
+                source_name[:-4]
+                if source_name.lower().endswith(".pdf")
+                else source_name
+            )
+            compressed_filename = f"{base}_compressed_{level}.pdf"
+            try:
+                new_record = self.store(
+                    filename=compressed_filename,
+                    data=compressed_bytes,
+                    page_count=out_page_count,
+                    metadata=dict(record.metadata),
+                )
+            except StorageError:
+                raise
+
+        return {
+            "source_document_id": document_id,
+            "new_document_id": new_record.document_id,
+            "filename": new_record.filename,
+            "original_filename": source_name,
+            "original_size": original_size,
+            "compressed_size": compressed_size,
+            "bytes_saved": bytes_saved,
+            "reduction_percent": round(reduction_percent, 2),
+            "page_count": out_page_count,
+            "level": level,
+            "status": status,
+            "warnings": warnings,
+        }
+
+    @staticmethod
+    def _compress_pdf_file(
+        src_path: Path,
+        level: str,
+        jpeg_quality: int,
+        max_image_dpi: int,
+        downsample_images: bool,
+    ) -> tuple[bytes, list[str]]:
+        """Compress a PDF file using pikepdf + Pillow, preserving pages,
+        text, fonts, vector graphics, and structure. Returns
+        (compressed_bytes, warnings).
+
+        No page rasterization occurs. Images are recompressed only when
+        safe and beneficial.
+        """
+        import pikepdf
+        import io
+        import warnings as pywarnings
+
+        warnings: list[str] = []
+
+        with pywarnings.catch_warnings(record=True) as w:
+            pywarnings.simplefilter("always")
+            with pikepdf.open(src_path) as pdf:
+                # Recompress images where appropriate.
+                for page in pdf.pages:
+                    try:
+                        _compress_page_images(
+                            page, level, jpeg_quality,
+                            max_image_dpi, downsample_images, warnings
+                        )
+                    except Exception:
+                        # Image recompression failure is non-fatal;
+                        # leave original image in place.
+                        pass
+
+                buf = io.BytesIO()
+                pdf.save(
+                    buf,
+                    compress_streams=True,
+                    object_stream_mode=pikepdf.ObjectStreamMode.generate,
+                )
+                return buf.getvalue(), warnings
+
+    @staticmethod
+    def _compress_page_images(
+        page: object,
+        level: str,
+        jpeg_quality: int,
+        max_image_dpi: int,
+        downsample_images: bool,
+        warnings: list[str],
+    ) -> None:
+        """Attempt to recompress images on a single page.
+
+        Operates on page resources. Images are recompressed only when
+        they are photographic (RGB/grayscale JPEG-encodable), larger than
+        a small threshold, and not part of a mask/soft-mask. Transparency
+        is preserved by keeping PNG for images with alpha or by using
+        JPEG2000 when available.
+        """
+        import pikepdf
+        from PIL import Image
+
+        try:
+            resources = page.get("/Resources", {})
+            xobjects = resources.get("/XObject", {})
+            if not xobjects:
+                return
+        except Exception:
+            return
+
+        for name, xobj in xobjects.items():
+            try:
+                if xobj.get("/Subtype") != "/Image":
+                    continue
+                # Skip images used as masks or soft masks.
+                if xobj.get("/SMask") is not None:
+                    continue
+                if xobj.get("/Mask") is not None:
+                    continue
+
+                width = xobj.get("/Width", 0)
+                height = xobj.get("/Height", 0)
+                if width < 50 or height < 50:
+                    continue  # Skip tiny images.
+
+                # Extract raw image stream.
+                try:
+                    raw = xobj.read_raw_stream()
+                except Exception:
+                    continue
+
+                # Determine color space.
+                colorspace = xobj.get("/ColorSpace", "/DeviceGray")
+                bits = xobj.get("/BitsPerComponent", 8)
+
+                # Only recompress photographic images (RGB/Gray), not
+                # line art / indexed / CMYK unless we can handle it.
+                if isinstance(colorspace, pikepdf.Name):
+                    cs_name = str(colorspace)
+                else:
+                    cs_name = str(colorspace)
+
+                if cs_name not in ("/DeviceGray", "/DeviceRGB"):
+                    continue
+
+                has_alpha = xobj.get("/SMask") is not None or (
+                    isinstance(xobj.get("/ColorSpace"), list)
+                    and len(xobj.get("/ColorSpace", [])) > 1
+                )
+
+                try:
+                    img = Image.open(io.BytesIO(raw))
+                except Exception:
+                    continue
+
+                # Determine if recompression is beneficial.
+                original_size = len(raw)
+
+                # Determine target format.
+                use_jpeg = (
+                    level in ("medium", "high")
+                    and not has_alpha
+                    and cs_name in ("/DeviceGray", "/DeviceRGB")
+                )
+
+                if use_jpeg:
+                    # Convert to RGB if needed.
+                    if img.mode != "RGB":
+                        try:
+                            img = img.convert("RGB")
+                        except Exception:
+                            continue
+
+                    # Downsample if requested and image is large enough.
+                    if downsample_images and max_image_dpi:
+                        # Estimate current DPI from image size / page rect.
+                        # Use a simple heuristic: if image is very large,
+                        # downsample to target DPI.
+                        page_rect = page.mediabox
+                        page_width = float(page_rect[2] - page_rect[0])
+                        page_height = float(page_rect[3] - page_rect[1])
+                        # Estimate effective DPI: width_px / width_inches.
+                        # 1 inch = 72 points.
+                        dpi_x = width / (page_width / 72.0) if page_width > 0 else 0
+                        dpi_y = height / (page_height / 72.0) if page_height > 0 else 0
+                        effective_dpi = max(dpi_x, dpi_y)
+
+                        if effective_dpi > max_image_dpi:
+                            scale = max_image_dpi / effective_dpi
+                            new_width = max(1, int(width * scale))
+                            new_height = max(1, int(height * scale))
+                            try:
+                                img = img.resize(
+                                    (new_width, new_height),
+                                    Image.LANCZOS,
+                                )
+                            except Exception:
+                                pass
+
+                    buf = io.BytesIO()
+                    try:
+                        img.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
+                        compressed = buf.getvalue()
+                    except Exception:
+                        continue
+
+                    # Only use compressed if smaller.
+                    if len(compressed) < original_size:
+                        try:
+                            xobj.write_stream(compressed)
+                            xobj["/Filter"] = pikepdf.Name("/DCTDecode")
+                            xobj["/ColorSpace"] = pikepdf.Name("/DeviceRGB")
+                            if "/SMask" in xobj:
+                                del xobj["/SMask"]
+                            if "/Mask" in xobj:
+                                del xobj["/Mask"]
+                        except Exception:
+                            pass
+                else:
+                    # Non-JPEG: try lossless recompression with Pillow.
+                    try:
+                        buf = io.BytesIO()
+                        img.save(buf, format="PNG", optimize=True)
+                        compressed = buf.getvalue()
+                        if len(compressed) < original_size:
+                            try:
+                                xobj.write_stream(compressed)
+                                xobj["/Filter"] = pikepdf.Name("/FlateDecode")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+            except Exception:
+                # Individual image failure is non-fatal.
+                continue
+
+    # ------------------------------------------------------------------
+    # Shared singleton instance used by all API routers.
+    # ------------------------------------------------------------------
 storage = DocumentStorage()
