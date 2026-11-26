@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TeamPDF Studio</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <div class="app-container">
+
+    <!-- Top navigation bar -->
+    <nav class="top-nav" role="navigation" aria-label="Main navigation">
+      <div class="nav-brand">
+        <span class="brand-icon">T</span>
+        <span class="brand-name">TeamPDF Studio</span>
+      </div>
+
+      <div class="nav-controls">
+        <button
+          type="button"
+          class="nav-btn btn-open"
+          id="btn-open"
+          title="Open PDF (Ctrl+O)"
+          aria-label="Open PDF"
+        >
+          <span class="btn-icon">&#128247;</span>
+          <span class="btn-label">Open PDF</span>
+        </button>
+
+        <div class="nav-separator"></div>
+
+        <span class="nav-filename" id="nav-filename" title="No document loaded">No document</span>
+
+        <div class="nav-separator"></div>
+
+        <button
+          type="button"
+          class="nav-btn btn-download"
+          id="btn-download"
+          title="Download PDF"
+          aria-label="Download PDF"
+          disabled
+        >
+          <span class="btn-icon">&#128472;</span>
+          <span class="btn-label">Download</span>
+        </button>
+      </div>
+
+      <div class="nav-status" id="nav-status">Ready</div>
+    </nav>
+
+    <!-- Main workspace -->
+    <div class="workspace" role="application" aria-label="PDF viewer workspace">
+
+      <!-- Left sidebar: thumbnails -->
+      <aside class="sidebar" id="sidebar" aria-label="Page thumbnails">
+        <div class="sidebar-header">
+          <h2 class="sidebar-title">Pages</h2>
+          <button
+            type="button"
+            class="sidebar-toggle"
+            id="sidebar-toggle"
+            title="Hide thumbnails"
+            aria-label="Hide thumbnails"
+          >
+            &#9664;
+          </button>
+        </div>
+        <div class="thumbnails-list" id="thumbnails-list" role="listbox" aria-label="Page thumbnails">
+          <!-- Thumbnail items injected here -->
+          <div class="thumbnails-empty">Open a document to see pages</div>
+        </div>
+      </aside>
+
+      <!-- Main document area -->
+      <section class="document-area" id="document-area" aria-label="Document pages">
+        <!-- Empty state -->
+        <div class="empty-state" id="empty-state">
+          <div class="empty-icon">&#128472;</div>
+          <h2 class="empty-title">No document open</h2>
+          <p class="empty-subtitle">Click "Open PDF" to load a document</p>
+        </div>
+
+        <!-- Viewer container (visible after document loads) -->
+        <div class="viewer-container" id="viewer-container" style="display:none;">
+          <div class="pages-viewport" id="pages-viewport">
+            <!-- Page elements injected here -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Viewer toolbar (overlay) -->
+      <div class="viewer-toolbar" id="viewer-toolbar" style="display:none;" role="toolbar" aria-label="Viewer controls">
+        <div class="toolbar-group">
+          <button
+            type="button"
+            class="toolbar-btn"
+            id="btn-prev"
+            title="Previous page (Page Up)"
+            aria-label="Previous page"
+            disabled
+          >
+            &#9664;
+          </button>
+          <button
+            type="button"
+            class="toolbar-btn"
+            id="btn-next"
+            title="Next page (Page Down)"
+            aria-label="Next page"
+            disabled
+          >
+            &#9654;
+          </button>
+        </div>
+
+        <div class="toolbar-group toolbar-page-info">
+          <span class="page-label">Page</span>
+          <input
+            type="number"
+            class="page-input"
+            id="page-input"
+            min="1"
+            value="1"
+            aria-label="Current page number"
+          />
+          <span class="page-of" id="page-of">of <span id="total-pages">0</span></span>
+        </div>
+
+        <div class="toolbar-group">
+          <button
+            type="button"
+            class="toolbar-btn"
+            id="btn-zoom-out"
+            title="Zoom out (Ctrl+-)"
+            aria-label="Zoom out"
+          >
+            &#8722;
+          </button>
+          <button
+            type="button"
+            class="toolbar-btn"
+            id="btn-zoom-in"
+            title="Zoom in (Ctrl++)"
+            aria-label="Zoom in"
+          >
+            &#43;
+          </button>
+          <button
+            type="button"
+            class="toolbar-btn toolbar-btn-toggle"
+            id="btn-fit-width"
+            title="Fit width"
+            aria-label="Fit page to width"
+            data-mode="fit-width"
+          >
+            Fit Width
+          </button>
+          <button
+            type="button"
+            class="toolbar-btn toolbar-btn-toggle"
+            id="btn-fit-page"
+            title="Fit page"
+            aria-label="Fit page to view"
+            data-mode="fit-page"
+          >
+            Fit Page
+          </button>
+          <button
+            type="button"
+            class="toolbar-btn toolbar-btn-toggle"
+            id="btn-actual-size"
+            title="Actual size (100%)"
+            aria-label="Actual size"
+            data-mode="actual"
+          >
+            100%
+          </button>
+        </div>
+
+        <div class="toolbar-group">
+          <button
+            type="button"
+            class="toolbar-btn"
+            id="btn-rotate"
+            title="Rotate clockwise"
+            aria-label="Rotate page"
+          >
+            &#8635;
+          </button>
+          <button
+            type="button"
+            class="toolbar-btn"
+            id="btn-toggle-thumbnails"
+            title="Toggle thumbnails sidebar"
+            aria-label="Toggle thumbnails"
+          >
+            &#9776;
+          </button>
+        </div>
+
+        <div class="toolbar-zoom" id="toolbar-zoom">100%</div>
+      </div>
+
+    </div>
+
+    <!-- Upload progress overlay -->
+    <div class="upload-overlay" id="upload-overlay" style="display:none;" role="status" aria-live="polite">
+      <div class="upload-dialog">
+        <div class="upload-spinner"></div>
+        <div class="upload-message" id="upload-message">Uploading document…</div>
+        <div class="upload-progress">
+          <div class="upload-progress-bar" id="upload-progress-bar"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Error toast -->
+    <div class="error-toast" id="error-toast" role="alert" aria-live="assertive" style="display:none;">
+      <div class="error-toast-content">
+        <span class="error-toast-icon">&#10060;</span>
+        <span class="error-toast-message" id="error-toast-message">An error occurred</span>
+        <button type="button" class="error-toast-close" id="error-toast-close" aria-label="Dismiss">&#215;</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- File input (hidden) -->
+  <input type="file" id="file-input" accept=".pdf" style="display:none;" />
+
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/viewer.js"></script>
+  <script src="/static/js/thumbnails.js"></script>
+  <script src="/static/js/toolbar.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api import api_router
 from app.config import Settings, get_settings
@@ -20,6 +23,9 @@ from app.errors import register_exception_handlers
 from app.logging_config import configure_logging
 
 logger = logging.getLogger("app")
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+FRONTEND_DIR = PROJECT_ROOT / "frontend"
 
 
 @asynccontextmanager
@@ -62,6 +68,20 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(api_router)
+
+    # Serve frontend static assets (CSS, JS, images) under /static.
+    # This does not conflict with API routes which live at /health,
+    # /documents, etc.
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(FRONTEND_DIR)),
+        name="frontend-static",
+    )
+
+    # Serve the single-page application at the root.
+    @app.get("/", include_in_schema=False)
+    async def read_index() -> FileResponse:
+        return FileResponse(str(FRONTEND_DIR / "index.html"))
 
     logger.debug("Application created with %d routes", len(app.routes))
     return app
