@@ -1,0 +1,8 @@
+# ---------------------------------------------------------------
+# TeamPDF Studio - development dependencies
+# Installed on top of requirements.txt; not required at runtime.
+# ---------------------------------------------------------------
+
+# --- Testing ---
+pytest==9.2.0
+httpx==0.28.1

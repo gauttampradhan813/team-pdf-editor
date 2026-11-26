@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     # --- Uploads (used from Phase 2 onwards) ---
     max_upload_size_mb: int = 100
 
+    # --- Document storage ---
+    storage_dir: str = "data/documents"
+    document_ttl_seconds: int = 86400
+    page_cache_max_entries: int = 50
+
+    # --- Rendering ---
+    default_render_scale: float = 1.5
+
 
 @lru_cache
 def get_settings() -> Settings:
